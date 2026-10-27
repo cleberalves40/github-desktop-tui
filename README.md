@@ -3,6 +3,13 @@
 Cliente Git para terminal, em C++17 e FTXUI, com suporte-alvo a FreeBSD 14.5 e
 15.1 e builds via Homebrew.
 
+## Versionamento
+
+A versão do projeto segue SemVer (`MAJOR.MINOR.PATCH`) e é definida em
+`project(VERSION ...)` no `CMakeLists.txt`. Enquanto a versão major for `0`, a
+compatibilidade da API ainda não é garantida. Releases usam tags Git anotadas
+no formato `vMAJOR.MINOR.PATCH`; a versão inicial é `0.1.0` (`v0.1.0`).
+
 ## Fase 2: fundação
 
 Esta etapa estabelece o build, a camada de execução de processos e a primeira

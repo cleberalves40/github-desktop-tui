@@ -21,7 +21,7 @@ namespace {
 
 int add_working_directory(posix_spawn_file_actions_t* actions,
                           const std::string& working_directory) {
-#if defined(__APPLE__) || defined(__linux__)
+#if defined(__APPLE__) || defined(__linux__) || defined(__FreeBSD__)
     return posix_spawn_file_actions_addchdir_np(actions, working_directory.c_str());
 #else
     return posix_spawn_file_actions_addchdir(actions, working_directory.c_str());

@@ -8,18 +8,27 @@
 #include <ftxui/screen/terminal.hpp>
 
 #include <algorithm>
+#include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace {
 
-enum class View { Changes, History, Branches };
+enum class View { Home, Changes, History, Branches };
 enum class InputMode { None, CommitMessage, NewBranch, ConfirmDelete, GhCommand };
+
+struct RemoteRepository {
+    std::string name;
+    std::string visibility;
+    std::string url;
+};
 
 std::string status_code(const FileChange& change) {
     if (change.is_untracked()) {
@@ -83,10 +92,12 @@ int main(int argc, char* argv[]) {
         return 2;
     }
 
-    const std::string path = argc == 2 ? argv[1] : ".";
+    const std::string path = argc == 2 ? argv[1] : "";
     auto screen = ftxui::ScreenInteractive::Fullscreen();
     std::mutex state_mutex;
+    std::string repository_path = path;
     RepositorySnapshot snapshot;
+    std::vector<RemoteRepository> remote_repositories;
     std::vector<BranchInfo> branch_list;
     std::vector<CommitInfo> commit_list;
     std::string diff_text;
@@ -98,13 +109,15 @@ int main(int argc, char* argv[]) {
     std::string gh_input;
     std::string gh_output;
     std::string gh_status = "GitHub: checking authentication...";
+    std::string remote_error;
     std::vector<std::string> gh_history;
     std::size_t gh_history_index = 0;
+    std::size_t remote_repository_index = 0;
     std::string status_message = "Loading repository...";
     std::size_t selected_change_index = 0;
     std::size_t selected_branch_index = 0;
     std::size_t selected_commit_index = 0;
-    View current_view = View::Changes;
+    View current_view = path.empty() ? View::Home : View::Changes;
     InputMode input_mode = InputMode::None;
     bool busy = false;
     bool gh_authenticated = false;
@@ -139,7 +152,12 @@ int main(int argc, char* argv[]) {
     };
 
     auto refresh_data = [&](const std::string& notice) {
-        auto fresh = Repository::inspect(path);
+        std::string active_path;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            active_path = repository_path;
+        }
+        auto fresh = Repository::inspect(active_path);
         std::string previous_path;
         {
             std::lock_guard<std::mutex> lock(state_mutex);
@@ -248,15 +266,50 @@ int main(int argc, char* argv[]) {
 
     auto refresh_gh_auth = [&](const std::string& repository_path) {
         bool authenticated = false;
+        std::vector<RemoteRepository> repositories;
+        std::string error;
         try {
             authenticated = ProcessRunner::run(
                                 {"gh", "auth", "status"}, repository_path).exit_code == 0;
         } catch (const std::exception&) {
             authenticated = false;
         }
+        if (authenticated) {
+            try {
+                const auto result = ProcessRunner::run(
+                    {"gh", "repo", "list", "--limit", "100", "--json",
+                     "nameWithOwner,isPrivate,url", "--template",
+                     "{{range .}}{{.nameWithOwner}}\t{{if .isPrivate}}private{{else}}public{{end}}\t{{.url}}\n{{end}}"},
+                    repository_path);
+                if (result.exit_code == 0) {
+                    std::istringstream rows(result.output);
+                    std::string row;
+                    while (std::getline(rows, row)) {
+                        const auto first_tab = row.find('\t');
+                        const auto second_tab = first_tab == std::string::npos
+                                                    ? std::string::npos
+                                                    : row.find('\t', first_tab + 1);
+                        if (first_tab == std::string::npos || second_tab == std::string::npos) {
+                            continue;
+                        }
+                        repositories.push_back({row.substr(0, first_tab),
+                                                 row.substr(first_tab + 1,
+                                                            second_tab - first_tab - 1),
+                                                 row.substr(second_tab + 1)});
+                    }
+                } else {
+                    error = result.output;
+                }
+            } catch (const std::exception& exception) {
+                error = exception.what();
+            }
+        }
         std::lock_guard<std::mutex> lock(state_mutex);
         gh_authenticated = authenticated;
         gh_status = authenticated ? "GitHub: authenticated" : "GitHub: not authenticated";
+        remote_repositories = std::move(repositories);
+        remote_repository_index = 0;
+        remote_error = std::move(error);
     };
 
     auto run_gh_command = [&](std::vector<std::string> arguments,
@@ -352,9 +405,12 @@ int main(int argc, char* argv[]) {
         std::string current_notice;
         std::vector<BranchInfo> current_branches;
         std::vector<CommitInfo> current_commits;
+        std::vector<RemoteRepository> current_remote_repositories;
         std::size_t change_selection = 0;
         std::size_t branch_selection = 0;
         std::size_t commit_selection = 0;
+        std::size_t remote_selection = 0;
+        std::string current_remote_error;
         View view = View::Changes;
         InputMode mode = InputMode::None;
         bool is_busy = false;
@@ -375,9 +431,12 @@ int main(int argc, char* argv[]) {
             current_notice = status_message;
             current_branches = branch_list;
             current_commits = commit_list;
+            current_remote_repositories = remote_repositories;
             change_selection = selected_change_index;
             branch_selection = selected_branch_index;
             commit_selection = selected_commit_index;
+            remote_selection = remote_repository_index;
+            current_remote_error = remote_error;
             view = current_view;
             mode = input_mode;
             is_busy = busy;
@@ -385,13 +444,57 @@ int main(int argc, char* argv[]) {
             is_gh_output_visible = show_gh_output;
         }
 
+        if (view == View::Home) {
+            ftxui::Elements repository_rows;
+            for (std::size_t index = 0; index < current_remote_repositories.size(); ++index) {
+                const auto& repository = current_remote_repositories[index];
+                auto row = ftxui::text(repository.name + "  " + repository.visibility);
+                if (index == remote_selection) {
+                    row = row | ftxui::bgcolor(ftxui::Color::GrayDark);
+                }
+                repository_rows.push_back(std::move(row));
+            }
+            if (repository_rows.empty()) {
+                repository_rows.push_back(ftxui::text(
+                    is_gh_authenticated ? "No repositories found." : "Sign in to GitHub to list repositories."));
+            }
+            const auto selection = remote_selection < current_remote_repositories.size()
+                                       ? current_remote_repositories[remote_selection].name
+                                       : std::string("No repository selected");
+            const auto repository_list = ftxui::vbox({
+                ftxui::text("YOUR REPOSITORIES") | ftxui::bold,
+                ftxui::separator(),
+                ftxui::vbox(std::move(repository_rows)) | ftxui::yframe | ftxui::flex,
+            }) | ftxui::border | ftxui::size(ftxui::WIDTH, ftxui::GREATER_THAN, 36) | ftxui::flex;
+            const auto repository_detail = ftxui::vbox({
+                ftxui::text("GET STARTED") | ftxui::bold,
+                ftxui::separator(),
+                ftxui::text(is_gh_authenticated ? "Select a repository to clone." : "Connect your GitHub account."),
+                ftxui::text(selection),
+                ftxui::text("Clone location: ~/src/<repository>"),
+                ftxui::text(current_remote_error),
+            }) | ftxui::border | ftxui::flex;
+            return ftxui::vbox({
+                ftxui::hbox({
+                    ftxui::text("GitHub Desktop TUI") | ftxui::bold,
+                    ftxui::filler(),
+                    ftxui::text(current_gh_status) |
+                        ftxui::color(is_gh_authenticated ? ftxui::Color::Green
+                                                         : ftxui::Color::Yellow),
+                }),
+                ftxui::hbox({repository_list, repository_detail}) | ftxui::flex,
+                ftxui::text(is_busy ? "Connecting to GitHub..." : current_notice),
+                ftxui::text("A Sign in  r Refresh  j/k Navigate  Enter Clone  q Quit"),
+            }) | ftxui::border;
+        }
+
         if (!current.is_repository) {
             return ftxui::vbox({
                        ftxui::text("GitHub Desktop TUI") | ftxui::bold,
                        ftxui::separator(),
-                       ftxui::text(is_busy ? "Inspecting repository..." : current_notice),
+                       ftxui::text(current.error.empty() ? "Not a Git repository." : current.error),
                        ftxui::text("Usage: github-desktop-tui [repository-path]"),
-                           ftxui::text("q: Quit"),
+                       ftxui::text("Press H to return home.  q Quit"),
                    }) |
                    ftxui::border;
         }
@@ -496,8 +599,10 @@ int main(int argc, char* argv[]) {
             footer = "1 Changes  2 History  3 Branches  j/k Select  Space/s Stage  i Commit  r Refresh  q Quit";
         } else if (view == View::History) {
             footer = "1 Changes  2 History  3 Branches  j/k Select commit  r Refresh  q Quit";
-        } else {
+        } else if (view == View::Branches) {
             footer = "1 Changes  2 History  3 Branches  j/k Select  Enter Switch  c Create  d Delete  v Compare";
+        } else {
+            footer = "A: Authenticate with GitHub  q: Quit";
         }
 
         auto content = ftxui::Terminal::Size().dimx < 90
@@ -535,7 +640,7 @@ int main(int argc, char* argv[]) {
                    ftxui::text(mode == InputMode::GhCommand
                                    ? ":gh> " + current_gh_input + "_"
                                    : "gh> : command  a auth  A login  p PR list  P PR create"),
-                   ftxui::text(is_busy ? "Working..." : current_notice),
+                ftxui::text(is_busy ? "Working..." : current_notice),
                    ftxui::text(footer),
                }) |
                ftxui::border;
@@ -566,6 +671,76 @@ int main(int argc, char* argv[]) {
             return true;
         }
         if (is_busy) {
+            return true;
+        }
+
+        if (current_view == View::Home) {
+            if (event == ftxui::Event::Character('A')) {
+                run_gh_command({"gh", "auth", "login"});
+                return true;
+            }
+            if (event == ftxui::Event::Character('a')) {
+                run_gh_command({"gh", "auth", "status"});
+                return true;
+            }
+            if (event == ftxui::Event::Character('r')) {
+                run_background([&] {
+                    {
+                        std::lock_guard<std::mutex> lock(state_mutex);
+                    }
+                    refresh_gh_auth({});
+                    std::lock_guard<std::mutex> lock(state_mutex);
+                    status_message = "Repository list refreshed.";
+                });
+                return true;
+            }
+            if (event == ftxui::Event::ArrowUp || event == ftxui::Event::Character('k') ||
+                event == ftxui::Event::ArrowDown || event == ftxui::Event::Character('j')) {
+                std::lock_guard<std::mutex> lock(state_mutex);
+                if (!remote_repositories.empty()) {
+                    if (event == ftxui::Event::ArrowUp || event == ftxui::Event::Character('k')) {
+                        if (remote_repository_index > 0) {
+                            --remote_repository_index;
+                        }
+                    } else if (remote_repository_index + 1 < remote_repositories.size()) {
+                        ++remote_repository_index;
+                    }
+                }
+                return true;
+            }
+            if (event == ftxui::Event::Return) {
+                RemoteRepository selected;
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex);
+                    if (!gh_authenticated || remote_repository_index >= remote_repositories.size()) {
+                        return true;
+                    }
+                    selected = remote_repositories[remote_repository_index];
+                }
+                run_background([&, selected] {
+                    const char* home = std::getenv("HOME");
+                    const auto destination = std::filesystem::path(home == nullptr ? "." : home) /
+                                             "src" / selected.name;
+                    std::filesystem::create_directories(destination.parent_path());
+                    const auto result = ProcessRunner::run(
+                        {"gh", "repo", "clone", selected.name, destination.string()});
+                    if (result.exit_code != 0) {
+                        std::lock_guard<std::mutex> lock(state_mutex);
+                        status_message = result.output.empty() ? "Repository clone failed."
+                                                               : result.output;
+                        return;
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(state_mutex);
+                        repository_path = destination.string();
+                        current_view = View::Changes;
+                        show_gh_output = false;
+                    }
+                    refresh_data("Cloned " + selected.name + ".");
+                    refresh_navigation("Cloned " + selected.name + ".");
+                });
+                return true;
+            }
             return true;
         }
 
@@ -773,6 +948,12 @@ int main(int argc, char* argv[]) {
                 current_view = View::History;
             }
             run_background([&] { refresh_navigation("History."); });
+            return true;
+        }
+        if (event == ftxui::Event::Character('H')) {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            current_view = View::Home;
+            status_message = "GitHub Home.";
             return true;
         }
         if (event == ftxui::Event::Character('b')) {
@@ -1002,15 +1183,15 @@ int main(int argc, char* argv[]) {
     });
 
     run_background([&] {
-        refresh_data("Ready.");
-        refresh_navigation("Ready.");
-        std::string repository_path;
-        {
-            std::lock_guard<std::mutex> lock(state_mutex);
-            repository_path = snapshot.path;
+        if (!path.empty()) {
+            refresh_data("Ready.");
+            refresh_navigation("Ready.");
         }
-        if (!repository_path.empty()) {
-            refresh_gh_auth(repository_path);
+        refresh_gh_auth(path);
+        if (path.empty()) {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            status_message = gh_authenticated ? "Ready to browse GitHub repositories."
+                                             : "Sign in to GitHub to continue.";
         }
     });
     screen.Loop(app);

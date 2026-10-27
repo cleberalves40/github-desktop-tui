@@ -1,20 +1,23 @@
 # GitHub Desktop TUI
 
-Cliente Git para terminal, em C++17 e FTXUI, com suporte-alvo a FreeBSD 14.5 e
-15.1 e builds via Homebrew.
+Cliente GitHub para terminal, em C++17 e FTXUI, com suporte-alvo a FreeBSD 14.5
+e 15.1 e builds via Homebrew.
 
 ## Versionamento
 
 A versão do projeto segue SemVer (`MAJOR.MINOR.PATCH`) e é definida em
 `project(VERSION ...)` no `CMakeLists.txt`. Enquanto a versão major for `0`, a
 compatibilidade da API ainda não é garantida. Releases usam tags Git anotadas
-no formato `vMAJOR.MINOR.PATCH`; a versão inicial é `0.1.0` (`v0.1.0`).
+no formato `vMAJOR.MINOR.PATCH`. A versão inicial foi `0.1.0` (`v0.1.0`);
+`0.2.0` adiciona o fluxo de autenticação e clone remoto.
 
-## Fase 2: fundação
+## Fase 3: GitHub remoto
 
-Esta etapa estabelece o build, a camada de execução de processos e a primeira
-visão do estado de um repositório. A interface consulta Git em segundo plano;
-nenhum comando é construído ou executado por meio de um shell.
+O aplicativo pode iniciar sem um repositório local. Na Home, autentique com o
+GitHub CLI, navegue pelos repositórios disponíveis e clone uma seleção para
+`~/src/OWNER/REPOSITORY`. Também é possível abrir um checkout existente passando
+seu caminho como argumento. Comandos são executados com argumentos separados,
+sem shell.
 
 ## Dependências
 
@@ -22,7 +25,7 @@ nenhum comando é construído ou executado por meio de um shell.
 - Compilador C++17
 - FTXUI
 - Git
-- GitHub CLI (`gh`, para as próximas etapas)
+- GitHub CLI (`gh`)
 
 ### FreeBSD 14.5 e 15.1
 
@@ -48,7 +51,10 @@ ctest --test-dir build --output-on-failure
 ./build/github-desktop-tui [caminho-do-repositorio]
 ```
 
-Sem argumento, a aplicação inspeciona o diretório atual. `q` ou `Esc` encerra a
+Sem argumento, a aplicação abre a Home do GitHub e não exige um checkout
+local. Execute `gh auth login` ou use `A` na interface para autenticar. `r`
+atualiza a lista, `j`/`k` navega e `Enter` clona o repositório selecionado.
+Para abrir um checkout existente, passe seu caminho. `q` ou `Esc` encerra a
 interface.
 
 ## Plataformas e testes
@@ -72,8 +78,10 @@ em FreeBSD 15.1-STABLE.
 
 ## GitHub CLI
 
+- `A` inicia a autenticação e `a` verifica o estado da sessão
+- A Home lista até 100 repositórios acessíveis pela conta autenticada
+- `r` atualiza a lista; `j`/`k` navega; `Enter` clona em `~/src/OWNER/REPOSITORY`
 - O estado de autenticação do `gh` aparece no cabeçalho
-- `a` verifica autenticação; `A` inicia `gh auth login`
 - `p` lista Pull Requests; `P` inicia a criação interativa de um Pull Request
 - `:` abre a linha de comando `gh`; argumentos entre aspas são aceitos e o
 	histórico é navegável pelas setas

@@ -9,9 +9,10 @@ A versão do projeto segue SemVer (`MAJOR.MINOR.PATCH`) e é definida em
 `project(VERSION ...)` no `CMakeLists.txt`. Enquanto a versão major for `0`, a
 compatibilidade da API ainda não é garantida. Releases usam tags Git anotadas
 no formato `vMAJOR.MINOR.PATCH`. A versão inicial foi `0.1.0` (`v0.1.0`);
-`0.2.0` adiciona o fluxo de autenticação e clone remoto.
+`0.2.0` adicionou o fluxo de autenticação e clone remoto; `0.3.0` atualiza a
+interface e amplia o painel inferior do GitHub CLI.
 
-## Fase 3: GitHub remoto
+## Experiência do aplicativo
 
 O aplicativo pode iniciar sem um repositório local. Na Home, autentique com o
 GitHub CLI, navegue pelos repositórios disponíveis e clone uma seleção para
@@ -51,11 +52,23 @@ ctest --test-dir build --output-on-failure
 ./build/github-desktop-tui [caminho-do-repositorio]
 ```
 
+atualiza a lista, `j`/`k` navega e `Enter` clona o repositório selecionado.
 Sem argumento, a aplicação abre a Home do GitHub e não exige um checkout
 local. Execute `gh auth login` ou use `A` na interface para autenticar. `r`
 atualiza a lista, `j`/`k` navega e `Enter` clona o repositório selecionado.
 Para abrir um checkout existente, passe seu caminho. `q` ou `Esc` encerra a
 interface.
+
+## Interface e fontes
+
+A navegação de Changes, History e Branches, a lista de arquivos e o painel de
+diff seguem uma organização inspirada no GitHub Desktop. O dock inferior mostra
+a saída e a linha de comando do GitHub CLI (`:`); ele não é um shell geral.
+Comandos interativos, como `gh auth login`, recebem o terminal temporariamente.
+
+Os ícones usam glyphs Nerd Font. Configure o emulador de terminal para usar
+**JetBrainsMono Nerd Font**; o aplicativo não instala nem altera a fonte do
+terminal.
 
 ## Plataformas e testes
 
@@ -81,6 +94,7 @@ em FreeBSD 15.1-STABLE.
 - `A` inicia a autenticação e `a` verifica o estado da sessão
 - A Home lista até 100 repositórios acessíveis pela conta autenticada
 - `r` atualiza a lista; `j`/`k` navega; `Enter` clona em `~/src/OWNER/REPOSITORY`
+- `:` abre a linha de comando do GitHub CLI também na Home
 - O estado de autenticação do `gh` aparece no cabeçalho
 - `p` lista Pull Requests; `P` inicia a criação interativa de um Pull Request
 - `:` abre a linha de comando `gh`; argumentos entre aspas são aceitos e o

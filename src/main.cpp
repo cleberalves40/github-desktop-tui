@@ -121,7 +121,6 @@ int main(int argc, char* argv[]) {
     InputMode input_mode = InputMode::None;
     bool busy = false;
     bool gh_authenticated = false;
-    bool show_gh_output = false;
     std::thread worker;
 
     auto run_background = [&](std::function<void()> operation) {
@@ -329,7 +328,6 @@ int main(int argc, char* argv[]) {
             detail_title = label;
             detail_text = "Running " + label + "...";
             gh_output = detail_text;
-            show_gh_output = true;
         }
 
         if (force_interactive || github::needs_interactive_terminal(arguments)) {
@@ -358,7 +356,6 @@ int main(int argc, char* argv[]) {
                                         std::to_string(result.exit_code) + "."
                                   : result.output;
                     gh_output = detail_text;
-                    show_gh_output = true;
                 status_message = label + " exited with code " +
                                  std::to_string(result.exit_code) + ".";
             }
@@ -376,7 +373,6 @@ int main(int argc, char* argv[]) {
                 detail_title = label;
                 detail_text = output;
                 gh_output = output;
-                show_gh_output = true;
                 status_message = label + " exited with code " +
                                  std::to_string(result.exit_code) + ".";
             }
@@ -415,7 +411,6 @@ int main(int argc, char* argv[]) {
         InputMode mode = InputMode::None;
         bool is_busy = false;
         bool is_gh_authenticated = false;
-        bool is_gh_output_visible = false;
         {
             std::lock_guard<std::mutex> lock(state_mutex);
             current = snapshot;
@@ -441,16 +436,17 @@ int main(int argc, char* argv[]) {
             mode = input_mode;
             is_busy = busy;
             is_gh_authenticated = gh_authenticated;
-            is_gh_output_visible = show_gh_output;
         }
 
         if (view == View::Home) {
             ftxui::Elements repository_rows;
             for (std::size_t index = 0; index < current_remote_repositories.size(); ++index) {
                 const auto& repository = current_remote_repositories[index];
-                auto row = ftxui::text(repository.name + "  " + repository.visibility);
+                const auto icon = repository.visibility == "private" ? "\uf023 " : "\uf0ac ";
+                auto row = ftxui::text(icon + repository.name);
                 if (index == remote_selection) {
-                    row = row | ftxui::bgcolor(ftxui::Color::GrayDark);
+                    row = row | ftxui::bgcolor(ftxui::Color::GrayDark) |
+                          ftxui::color(ftxui::Color::White);
                 }
                 repository_rows.push_back(std::move(row));
             }
@@ -462,29 +458,52 @@ int main(int argc, char* argv[]) {
                                        ? current_remote_repositories[remote_selection].name
                                        : std::string("No repository selected");
             const auto repository_list = ftxui::vbox({
-                ftxui::text("YOUR REPOSITORIES") | ftxui::bold,
+                ftxui::text("\uf07c  REPOSITORIES") | ftxui::bold,
                 ftxui::separator(),
                 ftxui::vbox(std::move(repository_rows)) | ftxui::yframe | ftxui::flex,
             }) | ftxui::border | ftxui::size(ftxui::WIDTH, ftxui::GREATER_THAN, 36) | ftxui::flex;
             const auto repository_detail = ftxui::vbox({
-                ftxui::text("GET STARTED") | ftxui::bold,
+                ftxui::text("\uf09b  GITHUB") | ftxui::bold,
                 ftxui::separator(),
-                ftxui::text(is_gh_authenticated ? "Select a repository to clone." : "Connect your GitHub account."),
+                ftxui::text(is_gh_authenticated ? "Select a repository to clone."
+                                                : "Connect your GitHub account."),
                 ftxui::text(selection),
-                ftxui::text("Clone location: ~/src/<repository>"),
+                ftxui::text("\uf0c5  Clone location: ~/src/OWNER/REPOSITORY"),
                 ftxui::text(current_remote_error),
             }) | ftxui::border | ftxui::flex;
+            ftxui::Elements output_lines;
+            std::istringstream output(current_gh_output);
+            std::string output_line;
+            while (std::getline(output, output_line)) {
+                output_lines.push_back(ftxui::text(output_line));
+            }
+            if (output_lines.empty()) {
+                output_lines.push_back(ftxui::text("GitHub CLI output will appear here."));
+            }
+            const auto cli_panel = ftxui::vbox({
+                ftxui::hbox({
+                    ftxui::text("\uf120  GITHUB CLI") | ftxui::bold,
+                    ftxui::filler(),
+                    ftxui::text(is_busy ? "Working..." : current_notice),
+                }),
+                ftxui::separator(),
+                ftxui::vbox(std::move(output_lines)) | ftxui::yframe | ftxui::flex,
+                ftxui::text(mode == InputMode::GhCommand
+                                ? ":gh> " + current_gh_input + "_"
+                                : ": command  a auth  A login"),
+            }) | ftxui::border | ftxui::size(ftxui::HEIGHT, ftxui::GREATER_THAN, 7) |
+                ftxui::size(ftxui::HEIGHT, ftxui::LESS_THAN, 10);
             return ftxui::vbox({
                 ftxui::hbox({
-                    ftxui::text("GitHub Desktop TUI") | ftxui::bold,
+                    ftxui::text("\uf09b  GitHub Desktop TUI") | ftxui::bold,
                     ftxui::filler(),
                     ftxui::text(current_gh_status) |
                         ftxui::color(is_gh_authenticated ? ftxui::Color::Green
                                                          : ftxui::Color::Yellow),
                 }),
                 ftxui::hbox({repository_list, repository_detail}) | ftxui::flex,
-                ftxui::text(is_busy ? "Connecting to GitHub..." : current_notice),
-                ftxui::text("A Sign in  r Refresh  j/k Navigate  Enter Clone  q Quit"),
+                cli_panel,
+                ftxui::text("A Sign in  r Refresh  j/k Navigate  Enter Clone  : CLI  q Quit"),
             }) | ftxui::border;
         }
 
@@ -507,7 +526,7 @@ int main(int argc, char* argv[]) {
                 selection = change_selection;
                 for (std::size_t index = 0; index < current.changes.size(); ++index) {
                     const auto& change = current.changes[index];
-                    auto row = ftxui::text(status_code(change) + "  " + change.path) |
+                    auto row = ftxui::text("\uf15b " + status_code(change) + "  " + change.path) |
                                ftxui::color(status_color(change));
                     if (index == selection) {
                         row = row | ftxui::bgcolor(ftxui::Color::GrayDark);
@@ -522,7 +541,8 @@ int main(int argc, char* argv[]) {
                 selection = commit_selection;
                 for (std::size_t index = 0; index < current_commits.size(); ++index) {
                     const auto& commit = current_commits[index];
-                    auto row = ftxui::text(commit.short_id + "  " + commit.date + "  " + commit.subject);
+                    auto row = ftxui::text("\uf1da " + commit.short_id + "  " +
+                                           commit.date + "  " + commit.subject);
                     if (index == selection) {
                         row = row | ftxui::bgcolor(ftxui::Color::GrayDark);
                     }
@@ -536,7 +556,8 @@ int main(int argc, char* argv[]) {
                 selection = branch_selection;
                 for (std::size_t index = 0; index < current_branches.size(); ++index) {
                     const auto& branch = current_branches[index];
-                    auto row = ftxui::text(std::string(branch.is_current ? "* " : "  ") + branch.name);
+                    auto row = ftxui::text(std::string(branch.is_current ? "\ue0a0 " : "  ") +
+                                           branch.name);
                     if (index == selection) {
                         row = row | ftxui::bgcolor(ftxui::Color::GrayDark);
                     }
@@ -559,11 +580,10 @@ int main(int argc, char* argv[]) {
         std::string right_title;
         std::string right_text;
         if (view == View::Changes) {
-            right_title = is_gh_output_visible ? "GH OUTPUT"
-                         : current.changes.empty()
+              right_title = current.changes.empty()
                               ? "DIFF"
                               : "DIFF  " + current.changes[change_selection].path;
-            right_text = is_gh_output_visible ? current_gh_output : current_diff;
+              right_text = current_diff;
         } else {
             right_title = current_detail_title;
             right_text = current_detail;
@@ -576,9 +596,9 @@ int main(int argc, char* argv[]) {
                           ftxui::border | ftxui::flex;
 
         const auto branch = current.branch.empty() ? "(detached HEAD)" : current.branch;
-        const auto page_name = view == View::Changes ? "1 Changes"
-                               : view == View::History ? "2 History"
-                                                       : "3 Branches";
+        const auto page_name = view == View::Changes ? "\uf044  Changes"
+                       : view == View::History ? "\uf1da  History"
+                                   : "\ue0a0  Branches";
         const auto commit_label = mode == InputMode::CommitMessage
                                       ? "Commit message > "
                                       : "Commit message   ";
@@ -613,13 +633,47 @@ int main(int argc, char* argv[]) {
                                  ftxui::flex
                            : ftxui::hbox({list_panel, detail_panel}) | ftxui::flex;
 
+        ftxui::Elements cli_output_lines;
+        std::istringstream cli_output(current_gh_output);
+        std::string cli_output_line;
+        while (std::getline(cli_output, cli_output_line)) {
+            cli_output_lines.push_back(ftxui::text(cli_output_line));
+        }
+        if (cli_output_lines.empty()) {
+            cli_output_lines.push_back(ftxui::text("GitHub CLI output will appear here."));
+        }
+        const auto cli_panel = ftxui::vbox({
+            ftxui::hbox({
+                ftxui::text("\uf120  GITHUB CLI") | ftxui::bold,
+                ftxui::filler(),
+                ftxui::text(is_busy ? "Working..." : current_notice),
+            }),
+            ftxui::separator(),
+            ftxui::vbox(std::move(cli_output_lines)) | ftxui::yframe | ftxui::flex,
+            ftxui::text(mode == InputMode::GhCommand
+                            ? ":gh> " + current_gh_input + "_"
+                            : "gh> : command  a auth  A login  p PR list  P PR create"),
+        }) | ftxui::border | ftxui::size(ftxui::HEIGHT, ftxui::GREATER_THAN, 7) |
+            ftxui::size(ftxui::HEIGHT, ftxui::LESS_THAN, 10);
+
         return ftxui::vbox({
                    ftxui::hbox({
-                       ftxui::text("GitHub Desktop TUI") | ftxui::bold,
+                       ftxui::text("\uf09b  GitHub Desktop TUI") | ftxui::bold,
+                       ftxui::filler(),
+                       ftxui::text("\ue0a0 " + branch),
+                   }),
+                   ftxui::hbox({
+                       ftxui::text("\uf044 1 Changes") |
+                           (view == View::Changes ? ftxui::bold | ftxui::bgcolor(ftxui::Color::GrayDark)
+                                                  : ftxui::nothing),
+                       ftxui::text("  \uf1da 2 History") |
+                           (view == View::History ? ftxui::bold | ftxui::bgcolor(ftxui::Color::GrayDark)
+                                                  : ftxui::nothing),
+                       ftxui::text("  \ue0a0 3 Branches") |
+                           (view == View::Branches ? ftxui::bold | ftxui::bgcolor(ftxui::Color::GrayDark)
+                                                   : ftxui::nothing),
                        ftxui::filler(),
                        ftxui::text(page_name),
-                       ftxui::text("  "),
-                       ftxui::text(branch),
                    }),
                    ftxui::hbox({
                        ftxui::text(current.path),
@@ -637,10 +691,7 @@ int main(int argc, char* argv[]) {
                    content,
                    ftxui::separator(),
                    ftxui::text(commit_label + message_display),
-                   ftxui::text(mode == InputMode::GhCommand
-                                   ? ":gh> " + current_gh_input + "_"
-                                   : "gh> : command  a auth  A login  p PR list  P PR create"),
-                ftxui::text(is_busy ? "Working..." : current_notice),
+                   cli_panel,
                    ftxui::text(footer),
                }) |
                ftxui::border;
@@ -675,6 +726,13 @@ int main(int argc, char* argv[]) {
         }
 
         if (current_view == View::Home) {
+            if (event == ftxui::Event::Character(':')) {
+                std::lock_guard<std::mutex> lock(state_mutex);
+                input_mode = InputMode::GhCommand;
+                gh_history_index = gh_history.size();
+                status_message = "Enter a gh command; shell syntax is not evaluated.";
+                return true;
+            }
             if (event == ftxui::Event::Character('A')) {
                 run_gh_command({"gh", "auth", "login"});
                 return true;
@@ -734,7 +792,6 @@ int main(int argc, char* argv[]) {
                         std::lock_guard<std::mutex> lock(state_mutex);
                         repository_path = destination.string();
                         current_view = View::Changes;
-                        show_gh_output = false;
                     }
                     refresh_data("Cloned " + selected.name + ".");
                     refresh_navigation("Cloned " + selected.name + ".");
@@ -1022,7 +1079,6 @@ int main(int argc, char* argv[]) {
                     }
                     selected_change = snapshot.changes[selected_change_index];
                     has_change = true;
-                    show_gh_output = false;
                 } else if (view == View::History && !commit_list.empty()) {
                     if (move_up) {
                         if (selected_commit_index > 0) {

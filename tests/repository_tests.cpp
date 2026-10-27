@@ -68,6 +68,59 @@ void write_file(const std::filesystem::path& path, const std::string& contents,
     require(file.good(), "Could not write test file: " + path.string());
 }
 
+void test_remote_sync() {
+    TemporaryDirectory temporary;
+    const auto root = std::filesystem::path(temporary.path());
+    const auto remote = root / "remote.git";
+    const auto seed = root / "seed";
+    const auto peer = root / "peer";
+        std::filesystem::create_directories(remote);
+    std::filesystem::create_directories(seed);
+    require_git(remote.string(), {"init", "--bare", "-q", "--initial-branch=main"});
+    require_git(seed.string(), {"init", "-q", "-b", "main"});
+    require_git(seed.string(), {"config", "user.name", "TUI Test"});
+    require_git(seed.string(), {"config", "user.email", "tui-test@example.invalid"});
+    write_file(seed / "README.md", "initial\n");
+    require_git(seed.string(), {"add", "README.md"});
+    require_git(seed.string(), {"commit", "-qm", "initial"});
+    require_git(seed.string(), {"remote", "add", "origin", remote.string()});
+    require_git(seed.string(), {"push", "-u", "origin", "main"});
+    require(ProcessRunner::run({"git", "clone", remote.string(), peer.string()}).exit_code == 0,
+            "Could not clone local test remote.");
+    require_git(peer.string(), {"config", "user.name", "TUI Test"});
+    require_git(peer.string(), {"config", "user.email", "tui-test@example.invalid"});
+
+    write_file(seed / "README.md", "remote update\n", true);
+    require_git(seed.string(), {"add", "README.md"});
+    require_git(seed.string(), {"commit", "-qm", "remote update"});
+    require(Repository::push(seed.string()).exit_code == 0,
+            "Repository push did not publish to the configured upstream.");
+
+    const auto local_head = git(peer.string(), {"rev-parse", "HEAD"}).output;
+    require(Repository::fetch(peer.string()).exit_code == 0,
+            "Repository fetch did not update remote-tracking refs.");
+    const auto fetched_head = git(peer.string(), {"rev-parse", "origin/main"}).output;
+    require(local_head != fetched_head, "Fetch unexpectedly changed the local branch.");
+    require(Repository::pull(peer.string()).exit_code == 0,
+            "Fast-forward pull failed for a clean working tree.");
+    require(git(peer.string(), {"rev-parse", "HEAD"}).output == fetched_head,
+            "Pull did not fast-forward the local branch.");
+
+    write_file(peer / "README.md", "local edit\n", true);
+    write_file(seed / "next.txt", "next remote commit\n");
+    require_git(seed.string(), {"add", "next.txt"});
+    require_git(seed.string(), {"commit", "-qm", "next remote commit"});
+    require(Repository::push(seed.string()).exit_code == 0,
+            "Could not publish second remote test commit.");
+    const auto blocked_pull = Repository::pull(peer.string());
+    require(blocked_pull.exit_code != 0 &&
+                blocked_pull.output.find("Commit or stash") != std::string::npos,
+            "Pull did not protect local uncommitted changes.");
+    require(git(peer.string(), {"diff", "--", "README.md"}).output.find("local edit") !=
+                std::string::npos,
+            "Blocked pull changed the local edit.");
+}
+
 const FileChange& find_change(const RepositorySnapshot& snapshot,
                               const std::string& path) {
     for (const auto& change : snapshot.changes) {
@@ -224,6 +277,8 @@ void run_tests() {
     require(snapshot.has_conflicts, "Merge conflict was not detected in repository status.");
     require(find_change(snapshot, "conflict.txt").is_conflicted(),
             "Conflicted path was not classified as unmerged.");
+
+        test_remote_sync();
 }
 
 }  // namespace

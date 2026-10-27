@@ -48,6 +48,9 @@ public:
                                       const FileChange& change);
     static ProcessResult commit(const std::string& repository_path,
                                 const std::string& message);
+    static ProcessResult fetch(const std::string& repository_path);
+    static ProcessResult pull(const std::string& repository_path);
+    static ProcessResult push(const std::string& repository_path);
     static std::vector<BranchInfo> branches(const std::string& repository_path);
     static ProcessResult create_branch(const std::string& repository_path,
                                        const std::string& name);

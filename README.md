@@ -9,8 +9,8 @@ A versão do projeto segue SemVer (`MAJOR.MINOR.PATCH`) e é definida em
 `project(VERSION ...)` no `CMakeLists.txt`. Enquanto a versão major for `0`, a
 compatibilidade da API ainda não é garantida. Releases usam tags Git anotadas
 no formato `vMAJOR.MINOR.PATCH`. A versão inicial foi `0.1.0` (`v0.1.0`);
-`0.2.0` adicionou o fluxo de autenticação e clone remoto; `0.3.0` atualiza a
-interface e amplia o painel inferior do GitHub CLI.
+`0.2.0` adicionou o fluxo de autenticação e clone remoto; `0.3.0` atualizou a
+interface; `0.4.0` adiciona sincronização remota com Git.
 
 ## Experiência do aplicativo
 
@@ -85,6 +85,10 @@ em FreeBSD 15.1-STABLE.
 	com a branch atual
 - `d` solicita confirmação e usa exclusão segura (`git branch -d`); a branch
 	atual não pode ser excluída
+- `f` busca atualizações (`git fetch`), `l` integra somente fast-forward
+	(`git pull --ff-only`) e `u` publica commits (`git push`)
+- Pull é bloqueado quando há alterações locais ou conflitos; push nunca usa
+	force
 - Branches não são trocadas se o Git detectar mudanças locais conflitantes
 - Conflitos de merge são destacados; a resolução continua sendo feita fora da
 	TUI nesta etapa
@@ -99,7 +103,7 @@ em FreeBSD 15.1-STABLE.
 - `p` lista Pull Requests; `P` inicia a criação interativa de um Pull Request
 - `:` abre a linha de comando `gh`; argumentos entre aspas são aceitos e o
 	histórico é navegável pelas setas
-- A saída de comandos não interativos aparece no painel de detalhes
+- A saída de comandos Git e GitHub aparece no dock inferior
 - Comandos interativos recebem o terminal temporariamente e devolvem a TUI ao
 	terminar
 - Prefixe com `!` (`:!gh auth refresh`) para forçar o handoff em outro comando

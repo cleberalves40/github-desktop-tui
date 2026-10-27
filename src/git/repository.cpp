@@ -196,6 +196,29 @@ ProcessResult Repository::commit(const std::string& repository_path,
         {"git", "-C", repository_path, "commit", "-m", message});
 }
 
+ProcessResult Repository::fetch(const std::string& repository_path) {
+    return ProcessRunner::run({"git", "-C", repository_path, "fetch"});
+}
+
+ProcessResult Repository::pull(const std::string& repository_path) {
+    const auto snapshot = inspect(repository_path);
+    if (!snapshot.is_repository) {
+        return {1, snapshot.error};
+    }
+    if (snapshot.has_conflicts) {
+        return {1, "Resolve merge conflicts before pulling."};
+    }
+    if (!snapshot.changes.empty()) {
+        return {1, "Commit or stash local changes before pulling."};
+    }
+    return ProcessRunner::run(
+        {"git", "-C", repository_path, "pull", "--ff-only"});
+}
+
+ProcessResult Repository::push(const std::string& repository_path) {
+    return ProcessRunner::run({"git", "-C", repository_path, "push"});
+}
+
 std::vector<BranchInfo> Repository::branches(const std::string& repository_path) {
     const auto result = ProcessRunner::run(
         {"git", "-C", repository_path, "branch", "--format=%(HEAD)%09%(refname:short)"});

@@ -311,6 +311,52 @@ int main(int argc, char* argv[]) {
         remote_error = std::move(error);
     };
 
+    auto run_git_remote_action = [&](char action) {
+        std::string active_path;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            active_path = snapshot.path;
+        }
+        if (active_path.empty()) {
+            return;
+        }
+        run_background([&, active_path, action] {
+            ProcessResult result;
+            std::string operation;
+            std::string success_message;
+            if (action == 'f') {
+                operation = "fetch";
+                success_message = "Fetched remote updates.";
+                result = Repository::fetch(active_path);
+            } else if (action == 'l') {
+                operation = "pull";
+                success_message = "Pulled remote updates.";
+                result = Repository::pull(active_path);
+            } else {
+                operation = "push";
+                success_message = "Pushed commits to the upstream.";
+                result = Repository::push(active_path);
+            }
+            if (result.exit_code != 0) {
+                std::lock_guard<std::mutex> lock(state_mutex);
+                const auto output = result.output.empty()
+                                        ? "Git " + operation + " failed."
+                                        : result.output;
+                gh_output = output;
+                detail_title = "git " + operation;
+                detail_text = output;
+                status_message = output;
+                return;
+            }
+            refresh_data(success_message);
+            refresh_navigation(success_message);
+            std::lock_guard<std::mutex> lock(state_mutex);
+            gh_output = result.output.empty() ? success_message : result.output;
+            detail_title = "git " + operation;
+            detail_text = gh_output;
+        });
+    };
+
     auto run_gh_command = [&](std::vector<std::string> arguments,
                               bool force_interactive = false) {
         std::string repository_path;
@@ -478,11 +524,11 @@ int main(int argc, char* argv[]) {
                 output_lines.push_back(ftxui::text(output_line));
             }
             if (output_lines.empty()) {
-                output_lines.push_back(ftxui::text("GitHub CLI output will appear here."));
+                output_lines.push_back(ftxui::text("Git and GitHub results will appear here."));
             }
             const auto cli_panel = ftxui::vbox({
                 ftxui::hbox({
-                    ftxui::text("\uf120  GITHUB CLI") | ftxui::bold,
+                    ftxui::text("\uf120  GIT & GITHUB OUTPUT") | ftxui::bold,
                     ftxui::filler(),
                     ftxui::text(is_busy ? "Working..." : current_notice),
                 }),
@@ -616,11 +662,11 @@ int main(int argc, char* argv[]) {
         } else if (mode == InputMode::GhCommand) {
             footer = "Enter Run  Up/Down Command history  Esc Cancel";
         } else if (view == View::Changes) {
-            footer = "1 Changes  2 History  3 Branches  j/k Select  Space/s Stage  i Commit  r Refresh  q Quit";
+            footer = "1 Changes  2 History  3 Branches  j/k Select  Space/s Stage  i Commit  f Fetch  l Pull  u Push  r Refresh  q Quit";
         } else if (view == View::History) {
-            footer = "1 Changes  2 History  3 Branches  j/k Select commit  r Refresh  q Quit";
+            footer = "1 Changes  2 History  3 Branches  j/k Select commit  f Fetch  l Pull  u Push  r Refresh  q Quit";
         } else if (view == View::Branches) {
-            footer = "1 Changes  2 History  3 Branches  j/k Select  Enter Switch  c Create  d Delete  v Compare";
+            footer = "1 Changes  2 History  3 Branches  j/k Select  Enter Switch  c Create  d Delete  v Compare  f Fetch  l Pull  u Push";
         } else {
             footer = "A: Authenticate with GitHub  q: Quit";
         }
@@ -640,11 +686,11 @@ int main(int argc, char* argv[]) {
             cli_output_lines.push_back(ftxui::text(cli_output_line));
         }
         if (cli_output_lines.empty()) {
-            cli_output_lines.push_back(ftxui::text("GitHub CLI output will appear here."));
+            cli_output_lines.push_back(ftxui::text("Git and GitHub results will appear here."));
         }
         const auto cli_panel = ftxui::vbox({
             ftxui::hbox({
-                ftxui::text("\uf120  GITHUB CLI") | ftxui::bold,
+                ftxui::text("\uf120  GIT & GITHUB OUTPUT") | ftxui::bold,
                 ftxui::filler(),
                 ftxui::text(is_busy ? "Working..." : current_notice),
             }),
@@ -1042,6 +1088,18 @@ int main(int argc, char* argv[]) {
         }
         if (event == ftxui::Event::Character('P')) {
             run_gh_command({"gh", "pr", "create"});
+            return true;
+        }
+        if (event == ftxui::Event::Character('f')) {
+            run_git_remote_action('f');
+            return true;
+        }
+        if (event == ftxui::Event::Character('l')) {
+            run_git_remote_action('l');
+            return true;
+        }
+        if (event == ftxui::Event::Character('u')) {
+            run_git_remote_action('u');
             return true;
         }
         if (event == ftxui::Event::Character('r')) {

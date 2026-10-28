@@ -1,5 +1,6 @@
 #include "git/repository.h"
 #include "github/command_parser.h"
+#include "github/remote_browser.h"
 #include "process/process_runner.h"
 
 #include <cstdlib>
@@ -132,6 +133,22 @@ const FileChange& find_change(const RepositorySnapshot& snapshot,
 }
 
 void run_tests() {
+    const auto contents = github::parse_repository_contents(
+        "docs%20and%20notes\tdir\tdocs%20and%20notes\t0\n"
+        "hello%20world.txt\tfile\tdocs%20and%20notes/hello%20world.txt\t42\n");
+    require(contents.size() == 2, "Remote repository contents were not parsed.");
+    require(contents[0].is_directory && contents[0].path == "docs and notes",
+            "Remote directory entry was parsed incorrectly.");
+    require(!contents[1].is_directory && contents[1].name == "hello world.txt" &&
+                contents[1].size == 42,
+            "Remote file entry with spaces was parsed incorrectly.");
+    require(github::encode_repository_path("docs and notes/a#b.txt") ==
+                "docs%20and%20notes/a%23b.txt",
+            "Remote path was not URL-encoded correctly.");
+    require(github::parent_repository_path("docs/subdir") == "docs" &&
+                github::parent_repository_path("docs") == "",
+            "Remote parent path was not calculated correctly.");
+
     TemporaryDirectory temporary;
     const auto repository_path = temporary.path();
 

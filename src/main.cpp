@@ -1,5 +1,6 @@
 #include "git/repository.h"
 #include "github/command_parser.h"
+#include "github/remote_browser.h"
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
@@ -21,7 +22,7 @@
 
 namespace {
 
-enum class View { Home, Changes, History, Branches };
+enum class View { Home, Changes, History, Branches, RemoteFiles };
 enum class InputMode { None, CommitMessage, NewBranch, ConfirmDelete, GhCommand };
 
 struct RemoteRepository {
@@ -85,6 +86,10 @@ void erase_last_character(std::string& text) {
     }
 }
 
+std::size_t visible_window_start(std::size_t selection, std::size_t visible_rows) {
+    return selection >= visible_rows ? selection - visible_rows + 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -94,10 +99,12 @@ int main(int argc, char* argv[]) {
 
     const std::string path = argc == 2 ? argv[1] : "";
     auto screen = ftxui::ScreenInteractive::Fullscreen();
+    screen.TrackMouse(true);
     std::mutex state_mutex;
     std::string repository_path = path;
     RepositorySnapshot snapshot;
     std::vector<RemoteRepository> remote_repositories;
+    std::vector<github::RepositoryContent> remote_entries;
     std::vector<BranchInfo> branch_list;
     std::vector<CommitInfo> commit_list;
     std::string diff_text;
@@ -110,9 +117,16 @@ int main(int argc, char* argv[]) {
     std::string gh_output;
     std::string gh_status = "GitHub: checking authentication...";
     std::string remote_error;
+    std::string remote_repository_name;
+    std::string remote_directory_path;
+    std::string remote_file_path;
+    std::string remote_file_content;
+    std::string remote_browser_error;
     std::vector<std::string> gh_history;
     std::size_t gh_history_index = 0;
     std::size_t remote_repository_index = 0;
+    std::size_t remote_entry_index = 0;
+    std::size_t remote_preview_scroll = 0;
     std::string status_message = "Loading repository...";
     std::size_t selected_change_index = 0;
     std::size_t selected_branch_index = 0;
@@ -311,6 +325,205 @@ int main(int argc, char* argv[]) {
         remote_error = std::move(error);
     };
 
+    auto refresh_remote_directory = [&](const std::string& repository_name,
+                                         const std::string& directory_path) {
+        std::string endpoint = "repos/" + repository_name + "/contents";
+        if (!directory_path.empty()) {
+            endpoint += "/" + github::encode_repository_path(directory_path);
+        }
+        {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            remote_repository_name = repository_name;
+            remote_directory_path = directory_path;
+            remote_entries.clear();
+            remote_entry_index = 0;
+            remote_file_path.clear();
+            remote_file_content.clear();
+            remote_preview_scroll = 0;
+            remote_browser_error.clear();
+            current_view = View::RemoteFiles;
+        }
+        run_background([&, repository_name, directory_path, endpoint] {
+            const auto result = ProcessRunner::run({
+                "gh", "api", "--paginate", "-F", "per_page=100", "--jq",
+                ".[] | [(.name | @uri), .type, (.path | @uri), (.size | tostring)] | @tsv",
+                endpoint,
+            });
+            if (result.exit_code != 0) {
+                const auto error = result.output.empty() ? "Could not list remote contents."
+                                                         : result.output;
+                std::lock_guard<std::mutex> lock(state_mutex);
+                remote_browser_error = error;
+                gh_output = error;
+                status_message = error;
+                return;
+            }
+            auto contents = github::parse_repository_contents(result.output);
+            std::lock_guard<std::mutex> lock(state_mutex);
+            remote_entries = std::move(contents);
+            remote_entry_index = 0;
+            remote_browser_error.clear();
+            gh_output = "Loaded " + std::to_string(remote_entries.size()) + " entries from " +
+                        repository_name + (directory_path.empty() ? "" : "/" + directory_path);
+            status_message = remote_entries.empty() ? "Directory is empty."
+                                                    : "Remote directory loaded.";
+        });
+    };
+
+    auto load_remote_file = [&](const std::string& repository_name,
+                                const std::string& file_path) {
+        const auto endpoint = "repos/" + repository_name + "/contents/" +
+                              github::encode_repository_path(file_path);
+        {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            remote_file_path = file_path;
+            remote_file_content = "Loading file...";
+            remote_preview_scroll = 0;
+            remote_browser_error.clear();
+        }
+        run_background([&, repository_name, file_path, endpoint] {
+            const auto result = ProcessRunner::run(
+                {"gh", "api", "-H", "Accept: application/vnd.github.raw+json", endpoint});
+            std::string content;
+            std::string error;
+            if (result.exit_code != 0) {
+                error = result.output.empty() ? "Could not read remote file." : result.output;
+            } else if (result.output.find('\0') != std::string::npos) {
+                error = "Binary file preview is not available in the terminal.";
+            } else {
+                content = result.output;
+                constexpr std::size_t preview_limit = 512 * 1024;
+                if (content.size() > preview_limit) {
+                    content.resize(preview_limit);
+                    content += "\n\n[Preview truncated at 512 KiB]";
+                }
+            }
+            std::lock_guard<std::mutex> lock(state_mutex);
+            remote_file_content = error.empty() ? std::move(content) : error;
+            remote_browser_error = std::move(error);
+            gh_output = remote_browser_error.empty() ? "Read " + repository_name + "/" + file_path
+                                                     : remote_browser_error;
+            status_message = remote_browser_error.empty() ? "Remote file loaded."
+                                                          : "Could not load remote file.";
+        });
+    };
+
+    auto open_remote_entry = [&](std::size_t index) {
+        std::string repository_name;
+        github::RepositoryContent selected;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            if (index >= remote_entries.size()) {
+                return;
+            }
+            remote_entry_index = index;
+            repository_name = remote_repository_name;
+            selected = remote_entries[index];
+        }
+        if (selected.is_directory) {
+            refresh_remote_directory(repository_name, selected.path);
+        } else {
+            load_remote_file(repository_name, selected.path);
+        }
+    };
+
+    auto browse_selected_remote_repository = [&] {
+        std::string selected_repository;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            if (!gh_authenticated || remote_repository_index >= remote_repositories.size()) {
+                return;
+            }
+            selected_repository = remote_repositories[remote_repository_index].name;
+        }
+        refresh_remote_directory(selected_repository, {});
+    };
+
+    auto clone_selected_remote_repository = [&] {
+        RemoteRepository selected;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            if (!gh_authenticated || remote_repository_index >= remote_repositories.size()) {
+                return;
+            }
+            selected = remote_repositories[remote_repository_index];
+        }
+        run_background([&, selected] {
+            const char* home = std::getenv("HOME");
+            const auto destination = std::filesystem::path(home == nullptr ? "." : home) /
+                                     "src" / selected.name;
+            std::filesystem::create_directories(destination.parent_path());
+            const auto result = ProcessRunner::run(
+                {"gh", "repo", "clone", selected.name, destination.string()});
+            if (result.exit_code != 0) {
+                std::lock_guard<std::mutex> lock(state_mutex);
+                status_message = result.output.empty() ? "Repository clone failed."
+                                                       : result.output;
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(state_mutex);
+                repository_path = destination.string();
+                current_view = View::Changes;
+            }
+            refresh_data("Cloned " + selected.name + ".");
+            refresh_navigation("Cloned " + selected.name + ".");
+        });
+    };
+
+    auto switch_view = [&](View target) {
+        {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            if ((target == View::Changes || target == View::History || target == View::Branches) &&
+                !snapshot.is_repository) {
+                return;
+            }
+            if (target == View::RemoteFiles && remote_repository_name.empty()) {
+                return;
+            }
+            current_view = target;
+            status_message = target == View::Home ? "GitHub Home."
+                             : target == View::RemoteFiles ? "Remote repository contents."
+                                                           : "View changed.";
+        }
+        if (target == View::History || target == View::Branches) {
+            run_background([&] { refresh_navigation("View changed."); });
+        }
+    };
+
+    auto cycle_view = [&](bool reverse) {
+        std::vector<View> views = {View::Home};
+        {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            if (snapshot.is_repository) {
+                views.push_back(View::Changes);
+                views.push_back(View::History);
+                views.push_back(View::Branches);
+            }
+            if (!remote_repository_name.empty()) {
+                views.push_back(View::RemoteFiles);
+            }
+            const auto current = std::find(views.begin(), views.end(), current_view);
+            if (current == views.end()) {
+                current_view = views.front();
+            } else {
+                auto index = static_cast<std::size_t>(current - views.begin());
+                index = reverse ? (index + views.size() - 1) % views.size()
+                                : (index + 1) % views.size();
+                current_view = views[index];
+            }
+            status_message = "View changed.";
+        }
+        View target;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            target = current_view;
+        }
+        if (target == View::History || target == View::Branches) {
+            run_background([&] { refresh_navigation("View changed."); });
+        }
+    };
+
     auto run_git_remote_action = [&](char action) {
         std::string active_path;
         {
@@ -448,11 +661,19 @@ int main(int argc, char* argv[]) {
         std::vector<BranchInfo> current_branches;
         std::vector<CommitInfo> current_commits;
         std::vector<RemoteRepository> current_remote_repositories;
+        std::vector<github::RepositoryContent> current_remote_entries;
         std::size_t change_selection = 0;
         std::size_t branch_selection = 0;
         std::size_t commit_selection = 0;
         std::size_t remote_selection = 0;
+        std::size_t remote_entry_selection = 0;
+        std::size_t current_remote_preview_scroll = 0;
         std::string current_remote_error;
+        std::string current_remote_repository_name;
+        std::string current_remote_directory_path;
+        std::string current_remote_file_path;
+        std::string current_remote_file_content;
+        std::string current_remote_browser_error;
         View view = View::Changes;
         InputMode mode = InputMode::None;
         bool is_busy = false;
@@ -473,20 +694,58 @@ int main(int argc, char* argv[]) {
             current_branches = branch_list;
             current_commits = commit_list;
             current_remote_repositories = remote_repositories;
+            current_remote_entries = remote_entries;
             change_selection = selected_change_index;
             branch_selection = selected_branch_index;
             commit_selection = selected_commit_index;
             remote_selection = remote_repository_index;
+            remote_entry_selection = remote_entry_index;
+            current_remote_preview_scroll = remote_preview_scroll;
             current_remote_error = remote_error;
+            current_remote_repository_name = remote_repository_name;
+            current_remote_directory_path = remote_directory_path;
+            current_remote_file_path = remote_file_path;
+            current_remote_file_content = remote_file_content;
+            current_remote_browser_error = remote_browser_error;
             view = current_view;
             mode = input_mode;
             is_busy = busy;
             is_gh_authenticated = gh_authenticated;
         }
 
+        auto navigation_tab = [&](const std::string& label, View target) {
+            auto element = ftxui::text(label);
+            if (view == target) {
+                element = element | ftxui::bold | ftxui::bgcolor(ftxui::Color::GrayDark) |
+                          ftxui::color(ftxui::Color::White);
+            }
+            return element;
+        };
+        ftxui::Elements navigation_items = {
+            navigation_tab("\uf015 Home", View::Home),
+        };
+        if (current.is_repository) {
+            navigation_items.push_back(ftxui::text("  "));
+            navigation_items.push_back(navigation_tab("\uf044 Changes", View::Changes));
+            navigation_items.push_back(ftxui::text("  "));
+            navigation_items.push_back(navigation_tab("\uf1da History", View::History));
+            navigation_items.push_back(ftxui::text("  "));
+            navigation_items.push_back(navigation_tab("\ue0a0 Branches", View::Branches));
+        }
+        if (!current_remote_repository_name.empty()) {
+            navigation_items.push_back(ftxui::text("  "));
+            navigation_items.push_back(navigation_tab("\uf07c Remote Files", View::RemoteFiles));
+        }
+        const auto navigation_tabs = ftxui::hbox(std::move(navigation_items));
+
         if (view == View::Home) {
             ftxui::Elements repository_rows;
-            for (std::size_t index = 0; index < current_remote_repositories.size(); ++index) {
+            const auto visible_rows = static_cast<std::size_t>(
+                std::max(1, ftxui::Terminal::Size().dimy - 16));
+            const auto first_row = visible_window_start(remote_selection, visible_rows);
+            const auto last_row = std::min(current_remote_repositories.size(),
+                                           first_row + visible_rows);
+            for (std::size_t index = first_row; index < last_row; ++index) {
                 const auto& repository = current_remote_repositories[index];
                 const auto icon = repository.visibility == "private" ? "\uf023 " : "\uf0ac ";
                 auto row = ftxui::text(icon + repository.name);
@@ -514,7 +773,9 @@ int main(int argc, char* argv[]) {
                 ftxui::text(is_gh_authenticated ? "Select a repository to clone."
                                                 : "Connect your GitHub account."),
                 ftxui::text(selection),
-                ftxui::text("\uf0c5  Clone location: ~/src/OWNER/REPOSITORY"),
+                ftxui::text("\uf07c  Browse files  [v]"),
+                ftxui::text("\uf0c5  Clone repository  [Enter]"),
+                ftxui::text("Location: ~/src/OWNER/REPOSITORY"),
                 ftxui::text(current_remote_error),
             }) | ftxui::border | ftxui::flex;
             ftxui::Elements output_lines;
@@ -547,9 +808,86 @@ int main(int argc, char* argv[]) {
                         ftxui::color(is_gh_authenticated ? ftxui::Color::Green
                                                          : ftxui::Color::Yellow),
                 }),
+                navigation_tabs,
                 ftxui::hbox({repository_list, repository_detail}) | ftxui::flex,
                 cli_panel,
-                ftxui::text("A Sign in  r Refresh  j/k Navigate  Enter Clone  : CLI  q Quit"),
+                ftxui::text("A Sign in  r Refresh  j/k or mouse select  v Browse  Enter Clone  : CLI  q Quit"),
+            }) | ftxui::border;
+        }
+
+        if (view == View::RemoteFiles) {
+            ftxui::Elements remote_rows;
+            const auto visible_rows = static_cast<std::size_t>(
+                std::max(1, ftxui::Terminal::Size().dimy - 11));
+            const auto first_row = visible_window_start(remote_entry_selection, visible_rows);
+            const auto last_row = std::min(current_remote_entries.size(), first_row + visible_rows);
+            for (std::size_t index = first_row; index < last_row; ++index) {
+                const auto& entry = current_remote_entries[index];
+                auto row = ftxui::text(std::string(entry.is_directory ? "\uf07b  " : "\uf15b  ") +
+                                       entry.name);
+                if (index == remote_entry_selection) {
+                    row = row | ftxui::bgcolor(ftxui::Color::GrayDark) |
+                          ftxui::color(ftxui::Color::White);
+                }
+                remote_rows.push_back(std::move(row));
+            }
+            if (remote_rows.empty()) {
+                remote_rows.push_back(ftxui::text(current_remote_browser_error.empty()
+                                                      ? "Directory is empty."
+                                                      : current_remote_browser_error));
+            }
+            const auto remote_list = ftxui::vbox({
+                ftxui::text("\uf07c  " + current_remote_repository_name) | ftxui::bold,
+                ftxui::separator(),
+                ftxui::vbox(std::move(remote_rows)) | ftxui::yframe | ftxui::flex,
+            }) | ftxui::border | ftxui::size(ftxui::WIDTH, ftxui::GREATER_THAN, 32) |
+                ftxui::size(ftxui::WIDTH, ftxui::LESS_THAN, 48) | ftxui::flex;
+
+            ftxui::Elements preview_lines;
+            std::istringstream preview(current_remote_file_content);
+            std::string preview_line;
+            std::vector<std::string> all_preview_lines;
+            while (std::getline(preview, preview_line)) {
+                all_preview_lines.push_back(std::move(preview_line));
+            }
+            if (all_preview_lines.empty()) {
+                preview_lines.push_back(ftxui::text("Select a file to preview it without cloning."));
+            } else {
+                const auto preview_start = std::min(current_remote_preview_scroll,
+                    all_preview_lines.size() > visible_rows
+                        ? all_preview_lines.size() - visible_rows
+                        : std::size_t{0});
+                const auto preview_end = std::min(all_preview_lines.size(),
+                                                  preview_start + visible_rows);
+                for (std::size_t index = preview_start; index < preview_end; ++index) {
+                    preview_lines.push_back(ftxui::text(all_preview_lines[index]));
+                }
+            }
+            const auto preview_panel = ftxui::vbox({
+                ftxui::text(current_remote_file_path.empty() ? "PREVIEW"
+                                                             : current_remote_file_path) |
+                    ftxui::bold,
+                ftxui::separator(),
+                ftxui::vbox(std::move(preview_lines)) | ftxui::yframe | ftxui::flex,
+            }) | ftxui::border | ftxui::flex;
+
+            const auto location = current_remote_directory_path.empty()
+                                      ? current_remote_repository_name
+                                      : current_remote_repository_name + "/" +
+                                            current_remote_directory_path;
+            return ftxui::vbox({
+                ftxui::hbox({
+                    ftxui::text("\uf09b  GitHub Desktop TUI") | ftxui::bold,
+                    ftxui::filler(),
+                    ftxui::text(current_gh_status),
+                }),
+                navigation_tabs,
+                ftxui::text(location),
+                ftxui::text(is_busy ? "Loading remote content..."
+                                    : current_remote_browser_error.empty() ? current_notice
+                                                                          : current_remote_browser_error),
+                ftxui::hbox({remote_list, preview_panel}) | ftxui::flex,
+                ftxui::text("TAB/Shift+TAB Screens  Click/Enter Open  Wheel/PageUp/Down Preview  Backspace Parent  H Home  q Quit"),
             }) | ftxui::border;
         }
 
@@ -642,9 +980,6 @@ int main(int argc, char* argv[]) {
                           ftxui::border | ftxui::flex;
 
         const auto branch = current.branch.empty() ? "(detached HEAD)" : current.branch;
-        const auto page_name = view == View::Changes ? "\uf044  Changes"
-                       : view == View::History ? "\uf1da  History"
-                                   : "\ue0a0  Branches";
         const auto commit_label = mode == InputMode::CommitMessage
                                       ? "Commit message > "
                                       : "Commit message   ";
@@ -662,11 +997,11 @@ int main(int argc, char* argv[]) {
         } else if (mode == InputMode::GhCommand) {
             footer = "Enter Run  Up/Down Command history  Esc Cancel";
         } else if (view == View::Changes) {
-            footer = "1 Changes  2 History  3 Branches  j/k Select  Space/s Stage  i Commit  f Fetch  l Pull  u Push  r Refresh  q Quit";
+            footer = "TAB Screens  Mouse Select  Space/s Stage  i Commit  f Fetch  l Pull  u Push  r Refresh  q Quit";
         } else if (view == View::History) {
-            footer = "1 Changes  2 History  3 Branches  j/k Select commit  f Fetch  l Pull  u Push  r Refresh  q Quit";
+            footer = "TAB Screens  Mouse Select  f Fetch  l Pull  u Push  r Refresh  q Quit";
         } else if (view == View::Branches) {
-            footer = "1 Changes  2 History  3 Branches  j/k Select  Enter Switch  c Create  d Delete  v Compare  f Fetch  l Pull  u Push";
+            footer = "TAB Screens  Mouse Select  Enter Switch  c Create  d Delete  v Compare  f Fetch  l Pull  u Push";
         } else {
             footer = "A: Authenticate with GitHub  q: Quit";
         }
@@ -708,19 +1043,7 @@ int main(int argc, char* argv[]) {
                        ftxui::filler(),
                        ftxui::text("\ue0a0 " + branch),
                    }),
-                   ftxui::hbox({
-                       ftxui::text("\uf044 1 Changes") |
-                           (view == View::Changes ? ftxui::bold | ftxui::bgcolor(ftxui::Color::GrayDark)
-                                                  : ftxui::nothing),
-                       ftxui::text("  \uf1da 2 History") |
-                           (view == View::History ? ftxui::bold | ftxui::bgcolor(ftxui::Color::GrayDark)
-                                                  : ftxui::nothing),
-                       ftxui::text("  \ue0a0 3 Branches") |
-                           (view == View::Branches ? ftxui::bold | ftxui::bgcolor(ftxui::Color::GrayDark)
-                                                   : ftxui::nothing),
-                       ftxui::filler(),
-                       ftxui::text(page_name),
-                   }),
+                   navigation_tabs,
                    ftxui::hbox({
                        ftxui::text(current.path),
                        ftxui::filler(),
@@ -771,7 +1094,212 @@ int main(int argc, char* argv[]) {
             return true;
         }
 
-        if (current_view == View::Home) {
+        if (!is_editing && event == ftxui::Event::Tab) {
+            cycle_view(false);
+            return true;
+        }
+        if (!is_editing && event == ftxui::Event::TabReverse) {
+            cycle_view(true);
+            return true;
+        }
+
+        if (!is_editing && event.is_mouse()) {
+            const auto mouse = event.mouse();
+            if (mouse.button == ftxui::Mouse::WheelUp ||
+                mouse.button == ftxui::Mouse::WheelDown) {
+                const bool move_up = mouse.button == ftxui::Mouse::WheelUp;
+                if (current_view == View::Home) {
+                    std::lock_guard<std::mutex> lock(state_mutex);
+                    if (move_up && remote_repository_index > 0) {
+                        --remote_repository_index;
+                    } else if (!move_up && remote_repository_index + 1 < remote_repositories.size()) {
+                        ++remote_repository_index;
+                    }
+                    return true;
+                }
+                if (current_view == View::RemoteFiles) {
+                    if (mouse.x >= ftxui::Terminal::Size().dimx / 2) {
+                        std::lock_guard<std::mutex> lock(state_mutex);
+                        if (move_up) {
+                            remote_preview_scroll = remote_preview_scroll > 3
+                                                        ? remote_preview_scroll - 3
+                                                        : 0;
+                        } else {
+                            remote_preview_scroll += 3;
+                        }
+                    } else {
+                        std::lock_guard<std::mutex> lock(state_mutex);
+                        if (move_up && remote_entry_index > 0) {
+                            --remote_entry_index;
+                        } else if (!move_up && remote_entry_index + 1 < remote_entries.size()) {
+                            ++remote_entry_index;
+                        }
+                    }
+                    return true;
+                }
+                event = ftxui::Event::Character(move_up ? 'k' : 'j');
+            } else if (mouse.button == ftxui::Mouse::Left &&
+                       mouse.motion == ftxui::Mouse::Pressed) {
+                if (mouse.y == 2) {
+                    const View target = mouse.x < 10 ? View::Home
+                                        : mouse.x < 22 ? View::Changes
+                                        : mouse.x < 34 ? View::History
+                                        : mouse.x < 47 ? View::Branches
+                                                       : View::RemoteFiles;
+                    switch_view(target);
+                    return true;
+                }
+                const int half_width = ftxui::Terminal::Size().dimx / 2;
+                if (current_view == View::Home) {
+                    if (mouse.x < half_width && mouse.y >= 6) {
+                        std::lock_guard<std::mutex> lock(state_mutex);
+                        const auto visible_rows = static_cast<std::size_t>(
+                            std::max(1, ftxui::Terminal::Size().dimy - 16));
+                        const auto index = visible_window_start(remote_repository_index,
+                                                                visible_rows) +
+                                           static_cast<std::size_t>(mouse.y - 6);
+                        if (index < remote_repositories.size()) {
+                            remote_repository_index = index;
+                        }
+                    } else if (mouse.x >= half_width && mouse.y == 8) {
+                        browse_selected_remote_repository();
+                    } else if (mouse.x >= half_width && mouse.y == 9) {
+                        clone_selected_remote_repository();
+                    }
+                    return true;
+                }
+                if (current_view == View::RemoteFiles) {
+                    if (mouse.x < half_width && mouse.y >= 8) {
+                        const auto visible_rows = static_cast<std::size_t>(
+                            std::max(1, ftxui::Terminal::Size().dimy - 11));
+                        const auto index = visible_window_start(remote_entry_index,
+                                                                visible_rows) +
+                                           static_cast<std::size_t>(mouse.y - 8);
+                        open_remote_entry(index);
+                    }
+                    return true;
+                }
+                if (mouse.y >= 10 &&
+                    (ftxui::Terminal::Size().dimx < 90 || mouse.x < 44)) {
+                    const auto index = static_cast<std::size_t>(mouse.y - 10);
+                    View selected_view;
+                    std::string active_path;
+                    FileChange selected_change;
+                    CommitInfo selected_commit;
+                    BranchInfo selected_branch;
+                    bool select_change = false;
+                    bool select_commit = false;
+                    bool select_branch = false;
+                    std::string current_branch;
+                    {
+                        std::lock_guard<std::mutex> lock(state_mutex);
+                        selected_view = current_view;
+                        active_path = snapshot.path;
+                        current_branch = snapshot.branch;
+                        if (selected_view == View::Changes && index < snapshot.changes.size()) {
+                            selected_change_index = index;
+                            selected_change = snapshot.changes[index];
+                            select_change = true;
+                        } else if (selected_view == View::History && index < commit_list.size()) {
+                            selected_commit_index = index;
+                            selected_commit = commit_list[index];
+                            select_commit = true;
+                        } else if (selected_view == View::Branches && index < branch_list.size()) {
+                            selected_branch_index = index;
+                            selected_branch = branch_list[index];
+                            select_branch = true;
+                        }
+                    }
+                    if (select_change) {
+                        run_background([&, active_path, selected_change] {
+                            auto next_diff = Repository::diff(active_path, selected_change);
+                            std::lock_guard<std::mutex> lock(state_mutex);
+                            diff_text = std::move(next_diff);
+                            status_message = "Selected " + selected_change.path;
+                        });
+                    } else if (select_commit) {
+                        run_background([&, active_path, selected_commit] {
+                            auto next_detail = Repository::commit_detail(active_path, selected_commit.id);
+                            std::lock_guard<std::mutex> lock(state_mutex);
+                            detail_title = selected_commit.short_id + "  " + selected_commit.subject;
+                            detail_text = std::move(next_detail);
+                            status_message = "Selected commit " + selected_commit.short_id;
+                        });
+                    } else if (select_branch) {
+                        std::lock_guard<std::mutex> lock(state_mutex);
+                        detail_title = "Branch: " + selected_branch.name;
+                        detail_text = selected_branch.is_current
+                                          ? "This is the current branch.\n\nSelect another branch and press Enter to switch."
+                                          : "Press Enter to switch to this branch.\nPress v to compare it with " +
+                                                (current_branch.empty() ? "HEAD" : current_branch) + ".";
+                        status_message = "Selected branch " + selected_branch.name;
+                    }
+                    return true;
+                }
+            }
+        }
+
+        if (current_view == View::RemoteFiles && input_mode == InputMode::None) {
+            if (event == ftxui::Event::Backspace) {
+                std::string repository_name;
+                std::string directory_path;
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex);
+                    repository_name = remote_repository_name;
+                    if (!remote_file_path.empty()) {
+                        remote_file_path.clear();
+                        remote_file_content.clear();
+                        remote_preview_scroll = 0;
+                        return true;
+                    }
+                    directory_path = remote_directory_path;
+                }
+                if (!directory_path.empty()) {
+                    refresh_remote_directory(repository_name,
+                                             github::parent_repository_path(directory_path));
+                } else {
+                    switch_view(View::Home);
+                }
+                return true;
+            }
+            if (event == ftxui::Event::Return) {
+                std::size_t index;
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex);
+                    index = remote_entry_index;
+                }
+                open_remote_entry(index);
+                return true;
+            }
+            if (event == ftxui::Event::PageUp || event == ftxui::Event::PageDown) {
+                std::lock_guard<std::mutex> lock(state_mutex);
+                const auto page = static_cast<std::size_t>(
+                    std::max(1, ftxui::Terminal::Size().dimy - 11));
+                if (event == ftxui::Event::PageUp) {
+                    remote_preview_scroll = remote_preview_scroll > page
+                                                ? remote_preview_scroll - page
+                                                : 0;
+                } else {
+                    remote_preview_scroll += page;
+                }
+                return true;
+            }
+            if (event == ftxui::Event::ArrowUp || event == ftxui::Event::Character('k') ||
+                event == ftxui::Event::ArrowDown || event == ftxui::Event::Character('j')) {
+                std::lock_guard<std::mutex> lock(state_mutex);
+                if (event == ftxui::Event::ArrowUp || event == ftxui::Event::Character('k')) {
+                    if (remote_entry_index > 0) {
+                        --remote_entry_index;
+                    }
+                } else if (remote_entry_index + 1 < remote_entries.size()) {
+                    ++remote_entry_index;
+                }
+                return true;
+            }
+            return true;
+        }
+
+        if (current_view == View::Home && input_mode == InputMode::None) {
             if (event == ftxui::Event::Character(':')) {
                 std::lock_guard<std::mutex> lock(state_mutex);
                 input_mode = InputMode::GhCommand;
@@ -785,6 +1313,10 @@ int main(int argc, char* argv[]) {
             }
             if (event == ftxui::Event::Character('a')) {
                 run_gh_command({"gh", "auth", "status"});
+                return true;
+            }
+            if (event == ftxui::Event::Character('v')) {
+                browse_selected_remote_repository();
                 return true;
             }
             if (event == ftxui::Event::Character('r')) {
@@ -813,35 +1345,7 @@ int main(int argc, char* argv[]) {
                 return true;
             }
             if (event == ftxui::Event::Return) {
-                RemoteRepository selected;
-                {
-                    std::lock_guard<std::mutex> lock(state_mutex);
-                    if (!gh_authenticated || remote_repository_index >= remote_repositories.size()) {
-                        return true;
-                    }
-                    selected = remote_repositories[remote_repository_index];
-                }
-                run_background([&, selected] {
-                    const char* home = std::getenv("HOME");
-                    const auto destination = std::filesystem::path(home == nullptr ? "." : home) /
-                                             "src" / selected.name;
-                    std::filesystem::create_directories(destination.parent_path());
-                    const auto result = ProcessRunner::run(
-                        {"gh", "repo", "clone", selected.name, destination.string()});
-                    if (result.exit_code != 0) {
-                        std::lock_guard<std::mutex> lock(state_mutex);
-                        status_message = result.output.empty() ? "Repository clone failed."
-                                                               : result.output;
-                        return;
-                    }
-                    {
-                        std::lock_guard<std::mutex> lock(state_mutex);
-                        repository_path = destination.string();
-                        current_view = View::Changes;
-                    }
-                    refresh_data("Cloned " + selected.name + ".");
-                    refresh_navigation("Cloned " + selected.name + ".");
-                });
+                clone_selected_remote_repository();
                 return true;
             }
             return true;

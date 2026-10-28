@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(github_desktop_tui VERSION 0.4.1 LANGUAGES CXX)
+project(github_desktop_tui VERSION 0.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,6 +15,7 @@ endif()
 add_executable(github-desktop-tui
     src/main.cpp
     src/github/command_parser.cpp
+    src/github/remote_browser.cpp
     src/git/repository.cpp
     src/process/process_runner.cpp
 )
@@ -34,6 +35,7 @@ if(BUILD_TESTING)
     add_executable(repository_tests
         tests/repository_tests.cpp
         src/github/command_parser.cpp
+        src/github/remote_browser.cpp
         src/git/repository.cpp
         src/process/process_runner.cpp
     )

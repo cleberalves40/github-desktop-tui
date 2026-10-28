@@ -10,16 +10,17 @@ A versão do projeto segue SemVer (`MAJOR.MINOR.PATCH`) e é definida em
 compatibilidade da API ainda não é garantida. Releases usam tags Git anotadas
 no formato `vMAJOR.MINOR.PATCH`. A versão inicial foi `0.1.0` (`v0.1.0`);
 `0.2.0` adicionou o fluxo de autenticação e clone remoto; `0.3.0` atualizou a
-interface; `0.4.0` adicionou sincronização remota com Git; `0.4.1` corrige a
-documentação e reforça a cobertura de conflitos durante pull.
+interface; `0.4.0` adicionou sincronização remota com Git; `0.4.1` reforçou a
+cobertura de conflitos durante pull; `0.5.0` adiciona navegação por mouse e
+visualização remota de arquivos sem clone.
 
 ## Experiência do aplicativo
 
 O aplicativo pode iniciar sem um repositório local. Na Home, autentique com o
-GitHub CLI, navegue pelos repositórios disponíveis e clone uma seleção para
-`~/src/OWNER/REPOSITORY`. Também é possível abrir um checkout existente passando
-seu caminho como argumento. Comandos são executados com argumentos separados,
-sem shell.
+GitHub CLI, navegue pelos repositórios disponíveis, visualize arquivos remotos
+sem clonar ou clone uma seleção para `~/src/OWNER/REPOSITORY`. Também é possível
+abrir um checkout existente passando seu caminho como argumento. Comandos são
+executados com argumentos separados, sem shell.
 
 ## Dependências
 
@@ -69,6 +70,10 @@ Os ícones usam glyphs Nerd Font. Configure o emulador de terminal para usar
 **JetBrainsMono Nerd Font**; o aplicativo não instala nem altera a fonte do
 terminal.
 
+TAB/Shift+TAB alterna entre as telas disponíveis. As abas e listas aceitam
+cliques; a roda do mouse navega as listas. O suporte ao mouse depende do
+emulador de terminal.
+
 ## Plataformas e testes
 
 O CI compila e executa CTest em FreeBSD 14.5 e 15.1, além de macOS com pacotes
@@ -97,6 +102,12 @@ em FreeBSD 15.1-STABLE.
 - `A` inicia a autenticação e `a` verifica o estado da sessão
 - A Home lista até 100 repositórios acessíveis pela conta autenticada
 - `r` atualiza a lista; `j`/`k` navega; `Enter` clona em `~/src/OWNER/REPOSITORY`
+- `v` abre o navegador remoto sem clonar; `Enter` em uma pasta navega nela e
+	em um arquivo mostra o preview textual
+- No preview, a roda do mouse ou PageUp/PageDown rola o conteúdo
+- O preview é limitado a 512 KiB; arquivos binários não são exibidos
+- No mouse, clique em uma linha para abrir seu conteúdo; na Home, selecione um
+	repositório e clique em Browse files ou Clone repository
 - `:` abre a linha de comando do GitHub CLI também na Home
 - O estado de autenticação do `gh` aparece no cabeçalho
 - `p` lista Pull Requests; `P` inicia a criação interativa de um Pull Request

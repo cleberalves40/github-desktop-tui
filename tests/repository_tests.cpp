@@ -277,6 +277,10 @@ void run_tests() {
     require(snapshot.has_conflicts, "Merge conflict was not detected in repository status.");
     require(find_change(snapshot, "conflict.txt").is_conflicted(),
             "Conflicted path was not classified as unmerged.");
+        const auto conflict_pull = Repository::pull(repository_path);
+        require(conflict_pull.exit_code != 0 &&
+                                conflict_pull.output.find("Resolve merge conflicts") != std::string::npos,
+                        "Pull did not protect a repository with unresolved conflicts.");
 
         test_remote_sync();
 }

@@ -10,7 +10,8 @@ A versão do projeto segue SemVer (`MAJOR.MINOR.PATCH`) e é definida em
 compatibilidade da API ainda não é garantida. Releases usam tags Git anotadas
 no formato `vMAJOR.MINOR.PATCH`. A versão inicial foi `0.1.0` (`v0.1.0`);
 `0.2.0` adicionou o fluxo de autenticação e clone remoto; `0.3.0` atualizou a
-interface; `0.4.0` adiciona sincronização remota com Git.
+interface; `0.4.0` adicionou sincronização remota com Git; `0.4.1` corrige a
+documentação e reforça a cobertura de conflitos durante pull.
 
 ## Experiência do aplicativo
 
@@ -51,8 +52,6 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ./build/github-desktop-tui [caminho-do-repositorio]
 ```
-
-atualiza a lista, `j`/`k` navega e `Enter` clona o repositório selecionado.
 Sem argumento, a aplicação abre a Home do GitHub e não exige um checkout
 local. Execute `gh auth login` ou use `A` na interface para autenticar. `r`
 atualiza a lista, `j`/`k` navega e `Enter` clona o repositório selecionado.

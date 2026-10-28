@@ -346,7 +346,7 @@ int main(int argc, char* argv[]) {
         }
         run_background([&, repository_name, directory_path, endpoint] {
             const auto result = ProcessRunner::run({
-                "gh", "api", "--paginate", "-F", "per_page=100", "--jq",
+                "gh", "api", "--paginate", "--jq",
                 ".[] | [(.name | @uri), .type, (.path | @uri), (.size | tostring)] | @tsv",
                 endpoint,
             });

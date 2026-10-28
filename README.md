@@ -13,7 +13,8 @@ no formato `vMAJOR.MINOR.PATCH`. A versão inicial foi `0.1.0` (`v0.1.0`);
 interface; `0.4.0` adicionou sincronização remota com Git; `0.4.1` reforçou a
 cobertura de conflitos durante pull; `0.5.0` adiciona navegação por mouse e
 visualização remota de arquivos sem clone; `0.5.1` alinha os alvos clicáveis das
-abas à largura real dos rótulos.
+abas à largura real dos rótulos; `0.5.2` corrige a listagem remota removendo um
+parâmetro não suportado pela Contents API.
 
 ## Experiência do aplicativo
 

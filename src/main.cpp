@@ -6,6 +6,7 @@
 #include <ftxui/component/event.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
+#include <ftxui/screen/string.hpp>
 #include <ftxui/screen/terminal.hpp>
 
 #include <algorithm>
@@ -1141,12 +1142,29 @@ int main(int argc, char* argv[]) {
             } else if (mouse.button == ftxui::Mouse::Left &&
                        mouse.motion == ftxui::Mouse::Pressed) {
                 if (mouse.y == 2) {
-                    const View target = mouse.x < 10 ? View::Home
-                                        : mouse.x < 22 ? View::Changes
-                                        : mouse.x < 34 ? View::History
-                                        : mouse.x < 47 ? View::Branches
-                                                       : View::RemoteFiles;
-                    switch_view(target);
+                    std::vector<std::pair<std::string, View>> tabs = {
+                        {"\uf015 Home", View::Home},
+                    };
+                    {
+                        std::lock_guard<std::mutex> lock(state_mutex);
+                        if (snapshot.is_repository) {
+                            tabs.emplace_back("\uf044 Changes", View::Changes);
+                            tabs.emplace_back("\uf1da History", View::History);
+                            tabs.emplace_back("\ue0a0 Branches", View::Branches);
+                        }
+                        if (!remote_repository_name.empty()) {
+                            tabs.emplace_back("\uf07c Remote Files", View::RemoteFiles);
+                        }
+                    }
+                    int tab_x = 1;
+                    for (const auto& [label, target] : tabs) {
+                        const int tab_width = ftxui::string_width(label);
+                        if (mouse.x >= tab_x && mouse.x < tab_x + tab_width) {
+                            switch_view(target);
+                            return true;
+                        }
+                        tab_x += tab_width + 2;
+                    }
                     return true;
                 }
                 const int half_width = ftxui::Terminal::Size().dimx / 2;

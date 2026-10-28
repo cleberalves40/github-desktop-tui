@@ -1,6 +1,7 @@
 #include "git/repository.h"
 #include "github/command_parser.h"
 #include "github/remote_browser.h"
+#include "github/syntax_highlighter.h"
 #include "process/process_runner.h"
 
 #include <cstdlib>
@@ -133,6 +134,42 @@ const FileChange& find_change(const RepositorySnapshot& snapshot,
 }
 
 void run_tests() {
+        const auto source_lines = github::highlight_file(
+                "src/example.cpp", "int answer = 42; // comment\nconst char* text = \"hello\";\n");
+        require(source_lines.size() == 2, "Source preview lines were not preserved.");
+        bool has_source_type = false;
+        bool has_source_number = false;
+        for (const auto& span : source_lines[0]) {
+                has_source_type = has_source_type || span.style == github::SyntaxStyle::Type;
+                has_source_number = has_source_number || span.style == github::SyntaxStyle::Number;
+        }
+        require(has_source_type && has_source_number,
+                        "Source keywords and numbers were not highlighted.");
+        require(source_lines[0].back().style == github::SyntaxStyle::Comment,
+                        "Source comments were not highlighted.");
+        bool has_source_string = false;
+        for (const auto& span : source_lines[1]) {
+                has_source_string = has_source_string || span.style == github::SyntaxStyle::String;
+        }
+        require(has_source_string,
+                        "Source strings were not highlighted.");
+
+        const auto markdown_lines = github::highlight_file(
+                "README.md", "# Heading\nInline `code` and **strong**\n```cpp\nreturn 42;\n```\n");
+        require(markdown_lines.size() == 5 &&
+                                markdown_lines[0][0].style == github::SyntaxStyle::Heading,
+                        "Markdown heading was not highlighted.");
+        require(markdown_lines[1][1].style == github::SyntaxStyle::Code &&
+                                markdown_lines[1].back().style == github::SyntaxStyle::Emphasis,
+                        "Markdown inline code and emphasis were not highlighted.");
+        require(markdown_lines[3][0].style == github::SyntaxStyle::Keyword,
+                        "Markdown fenced source code was not highlighted.");
+
+        const auto plain_lines = github::highlight_file("notes.txt", "plain text\n");
+        require(plain_lines.size() == 1 && plain_lines[0].size() == 1 &&
+                                plain_lines[0][0].style == github::SyntaxStyle::Plain,
+                        "Unknown file types should remain plain text.");
+
     const auto contents = github::parse_repository_contents(
         "docs%20and%20notes\tdir\tdocs%20and%20notes\t0\n"
         "hello%20world.txt\tfile\tdocs%20and%20notes/hello%20world.txt\t42\n");

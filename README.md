@@ -14,7 +14,8 @@ interface; `0.4.0` adicionou sincronização remota com Git; `0.4.1` reforçou a
 cobertura de conflitos durante pull; `0.5.0` adiciona navegação por mouse e
 visualização remota de arquivos sem clone; `0.5.1` alinha os alvos clicáveis das
 abas à largura real dos rótulos; `0.5.2` corrige a listagem remota removendo um
-parâmetro não suportado pela Contents API.
+parâmetro não suportado pela Contents API; `0.6.0` colore sintaxe no preview de
+arquivos de código e Markdown.
 
 ## Experiência do aplicativo
 
@@ -108,6 +109,7 @@ em FreeBSD 15.1-STABLE.
 	em um arquivo mostra o preview textual
 - No preview, a roda do mouse ou PageUp/PageDown rola o conteúdo
 - O preview é limitado a 512 KiB; arquivos binários não são exibidos
+- Código-fonte e Markdown recebem destaque de sintaxe no preview
 - No mouse, clique em uma linha para abrir seu conteúdo; na Home, selecione um
 	repositório e clique em Browse files ou Clone repository
 - `:` abre a linha de comando do GitHub CLI também na Home

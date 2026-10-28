@@ -1,6 +1,7 @@
 #include "git/repository.h"
 #include "github/command_parser.h"
 #include "github/remote_browser.h"
+#include "github/syntax_highlighter.h"
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
@@ -74,6 +75,44 @@ ftxui::Elements render_diff(const std::string& diff) {
         lines.push_back(ftxui::text("Select a changed file to inspect its diff."));
     }
     return lines;
+}
+
+ftxui::Element render_syntax_line(const github::StyledLine& line) {
+    ftxui::Elements segments;
+    for (const auto& span : line) {
+        auto element = ftxui::text(span.text);
+        switch (span.style) {
+            case github::SyntaxStyle::Keyword:
+                element = element | ftxui::color(ftxui::Color::Magenta) | ftxui::bold;
+                break;
+            case github::SyntaxStyle::Type:
+                element = element | ftxui::color(ftxui::Color::Cyan);
+                break;
+            case github::SyntaxStyle::String:
+            case github::SyntaxStyle::Code:
+                element = element | ftxui::color(ftxui::Color::Green);
+                break;
+            case github::SyntaxStyle::Comment:
+                element = element | ftxui::color(ftxui::Color::GrayDark);
+                break;
+            case github::SyntaxStyle::Number:
+                element = element | ftxui::color(ftxui::Color::Yellow);
+                break;
+            case github::SyntaxStyle::Heading:
+                element = element | ftxui::color(ftxui::Color::Cyan) | ftxui::bold;
+                break;
+            case github::SyntaxStyle::Emphasis:
+                element = element | ftxui::color(ftxui::Color::Yellow) | ftxui::bold;
+                break;
+            case github::SyntaxStyle::Link:
+                element = element | ftxui::color(ftxui::Color::Blue);
+                break;
+            case github::SyntaxStyle::Plain:
+                break;
+        }
+        segments.push_back(std::move(element));
+    }
+    return segments.empty() ? ftxui::text("") : ftxui::hbox(std::move(segments));
 }
 
 void erase_last_character(std::string& text) {
@@ -845,12 +884,8 @@ int main(int argc, char* argv[]) {
                 ftxui::size(ftxui::WIDTH, ftxui::LESS_THAN, 48) | ftxui::flex;
 
             ftxui::Elements preview_lines;
-            std::istringstream preview(current_remote_file_content);
-            std::string preview_line;
-            std::vector<std::string> all_preview_lines;
-            while (std::getline(preview, preview_line)) {
-                all_preview_lines.push_back(std::move(preview_line));
-            }
+            const auto all_preview_lines = github::highlight_file(current_remote_file_path,
+                                                                  current_remote_file_content);
             if (all_preview_lines.empty()) {
                 preview_lines.push_back(ftxui::text("Select a file to preview it without cloning."));
             } else {
@@ -861,7 +896,7 @@ int main(int argc, char* argv[]) {
                 const auto preview_end = std::min(all_preview_lines.size(),
                                                   preview_start + visible_rows);
                 for (std::size_t index = preview_start; index < preview_end; ++index) {
-                    preview_lines.push_back(ftxui::text(all_preview_lines[index]));
+                    preview_lines.push_back(render_syntax_line(all_preview_lines[index]));
                 }
             }
             const auto preview_panel = ftxui::vbox({

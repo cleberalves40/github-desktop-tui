@@ -1,0 +1,3 @@
+GitHub-oriented terminal client written in C++17 with FTXUI. It provides
+working-tree, history, branch, and remote repository browsing, syntax-colored
+source/Markdown previews, configurable color themes, and GitHub CLI workflows.

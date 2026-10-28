@@ -1112,13 +1112,13 @@ int main(int argc, char* argv[]) {
         } else if (mode == InputMode::GhCommand) {
             footer = "Enter Run  Up/Down Command history  Esc Cancel";
         } else if (view == View::Changes) {
-            footer = "TAB Screens  Mouse Select  Space/s Stage  i Commit  f Fetch  l Pull  u Push  r Refresh  q Quit";
+            footer = "TAB Screens  Mouse Select  Space/s Stage  i Commit  f Fetch  l Pull  u Push  r Refresh  t Theme  q Quit";
         } else if (view == View::History) {
-            footer = "TAB Screens  Mouse Select  f Fetch  l Pull  u Push  r Refresh  q Quit";
+            footer = "TAB Screens  Mouse Select  f Fetch  l Pull  u Push  r Refresh  t Theme  q Quit";
         } else if (view == View::Branches) {
-            footer = "TAB Screens  Mouse Select  Enter Switch  c Create  d Delete  v Compare  f Fetch  l Pull  u Push";
+            footer = "TAB Screens  Mouse Select  Enter Switch  c Create  d Delete  v Compare  f Fetch  l Pull  u Push  t Theme";
         } else {
-            footer = "A: Authenticate with GitHub  q: Quit";
+            footer = "A: Authenticate with GitHub  t Theme  q: Quit";
         }
 
         auto content = ftxui::Terminal::Size().dimx < 90

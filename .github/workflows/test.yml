@@ -29,6 +29,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: brew install cmake ninja ftxui git gh
+      - run: brew style Formula/github-desktop-tui.rb
+      - run: brew install --build-from-source ./Formula/github-desktop-tui.rb
+      - run: brew test ./Formula/github-desktop-tui.rb
       - run: cmake -S . -B build-clean -G Ninja -DCMAKE_BUILD_TYPE=Release
       - run: cmake --build build-clean
       - run: ctest --test-dir build-clean --output-on-failure

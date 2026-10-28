@@ -99,6 +99,7 @@ instaladas, teste a fórmula a partir deste clone com:
 
 ```sh
 brew install --build-from-source ./Formula/github-desktop-tui.rb
+brew test ./Formula/github-desktop-tui.rb
 ```
 
 ## Branches e histórico

@@ -2,6 +2,7 @@
 #include "github/command_parser.h"
 #include "github/remote_browser.h"
 #include "github/syntax_highlighter.h"
+#include "ui/theme.h"
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
@@ -11,10 +12,12 @@
 #include <ftxui/screen/terminal.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <iostream>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -25,7 +28,7 @@
 namespace {
 
 enum class View { Home, Changes, History, Branches, RemoteFiles };
-enum class InputMode { None, CommitMessage, NewBranch, ConfirmDelete, GhCommand };
+enum class InputMode { None, CommitMessage, NewBranch, ConfirmDelete, GhCommand, ThemePicker };
 
 struct RemoteRepository {
     std::string name;
@@ -40,34 +43,34 @@ std::string status_code(const FileChange& change) {
     return std::string(1, change.index_status) + change.worktree_status;
 }
 
-ftxui::Color status_color(const FileChange& change) {
+ftxui::Color status_color(const FileChange& change, const app::ThemePalette& palette) {
     if (change.is_untracked()) {
-        return ftxui::Color::Yellow;
+        return palette.warning;
     }
     if (change.is_conflicted() || change.index_status == 'D' || change.worktree_status == 'D') {
-        return ftxui::Color::Red;
+        return palette.error;
     }
     if (change.is_staged() && !change.is_unstaged()) {
-        return ftxui::Color::Green;
+        return palette.success;
     }
-    return ftxui::Color::Cyan;
+    return palette.accent;
 }
 
-ftxui::Elements render_diff(const std::string& diff) {
+ftxui::Elements render_diff(const std::string& diff, const app::ThemePalette& palette) {
     ftxui::Elements lines;
     std::istringstream input(diff);
     std::string line;
     while (std::getline(input, line)) {
         auto element = ftxui::text(line);
         if (!line.empty() && line[0] == '+') {
-            element = element | ftxui::color(ftxui::Color::Green);
+            element = element | ftxui::color(palette.added);
         } else if (!line.empty() && line[0] == '-') {
-            element = element | ftxui::color(ftxui::Color::Red);
+            element = element | ftxui::color(palette.removed);
         } else if (line.rfind("diff --", 0) == 0 ||
                    line.rfind("@@", 0) == 0 ||
                    line.rfind("Staged changes", 0) == 0 ||
                    line.rfind("Unstaged changes", 0) == 0) {
-            element = element | ftxui::color(ftxui::Color::Cyan);
+            element = element | ftxui::color(palette.accent);
         }
         lines.push_back(std::move(element));
     }
@@ -77,35 +80,36 @@ ftxui::Elements render_diff(const std::string& diff) {
     return lines;
 }
 
-ftxui::Element render_syntax_line(const github::StyledLine& line) {
+ftxui::Element render_syntax_line(const github::StyledLine& line,
+                                  const app::ThemePalette& palette) {
     ftxui::Elements segments;
     for (const auto& span : line) {
         auto element = ftxui::text(span.text);
         switch (span.style) {
             case github::SyntaxStyle::Keyword:
-                element = element | ftxui::color(ftxui::Color::Magenta) | ftxui::bold;
+                element = element | ftxui::color(palette.keyword) | ftxui::bold;
                 break;
             case github::SyntaxStyle::Type:
-                element = element | ftxui::color(ftxui::Color::Cyan);
+                element = element | ftxui::color(palette.type);
                 break;
             case github::SyntaxStyle::String:
             case github::SyntaxStyle::Code:
-                element = element | ftxui::color(ftxui::Color::Green);
+                element = element | ftxui::color(palette.string);
                 break;
             case github::SyntaxStyle::Comment:
-                element = element | ftxui::color(ftxui::Color::GrayDark);
+                element = element | ftxui::color(palette.comment);
                 break;
             case github::SyntaxStyle::Number:
-                element = element | ftxui::color(ftxui::Color::Yellow);
+                element = element | ftxui::color(palette.number);
                 break;
             case github::SyntaxStyle::Heading:
-                element = element | ftxui::color(ftxui::Color::Cyan) | ftxui::bold;
+                element = element | ftxui::color(palette.heading) | ftxui::bold;
                 break;
             case github::SyntaxStyle::Emphasis:
-                element = element | ftxui::color(ftxui::Color::Yellow) | ftxui::bold;
+                element = element | ftxui::color(palette.emphasis) | ftxui::bold;
                 break;
             case github::SyntaxStyle::Link:
-                element = element | ftxui::color(ftxui::Color::Blue);
+                element = element | ftxui::color(palette.link);
                 break;
             case github::SyntaxStyle::Plain:
                 break;
@@ -130,9 +134,36 @@ std::size_t visible_window_start(std::size_t selection, std::size_t visible_rows
     return selection >= visible_rows ? selection - visible_rows + 1 : 0;
 }
 
+std::filesystem::path theme_preference_path() {
+    if (const char* config_home = std::getenv("XDG_CONFIG_HOME");
+        config_home != nullptr && config_home[0] != '\0') {
+        return std::filesystem::path(config_home) / "github-desktop-tui" / "theme";
+    }
+    if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0') {
+        return std::filesystem::path(home) / ".config" / "github-desktop-tui" / "theme";
+    }
+    return {};
+}
+
+std::size_t theme_index(app::ThemeName theme) {
+    const auto& themes = app::available_themes();
+    const auto found = std::find(themes.begin(), themes.end(), theme);
+    return found == themes.end() ? 0 : static_cast<std::size_t>(found - themes.begin());
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
+    if (argc == 2 && std::string(argv[1]) == "--version") {
+        std::cout << "github-desktop-tui " << GITHUB_DESKTOP_TUI_VERSION << '\n';
+        return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--help") {
+        std::cout << "Usage: github-desktop-tui [repository-path]\n"
+                     "       github-desktop-tui --version\n"
+                     "       github-desktop-tui --help\n";
+        return 0;
+    }
     if (argc > 2) {
         return 2;
     }
@@ -140,6 +171,9 @@ int main(int argc, char* argv[]) {
     const std::string path = argc == 2 ? argv[1] : "";
     auto screen = ftxui::ScreenInteractive::Fullscreen();
     screen.TrackMouse(true);
+    const auto theme_path = theme_preference_path();
+    auto active_theme = app::load_theme_preference(theme_path).value_or(app::ThemeName::Selenized);
+    auto theme_selection = theme_index(active_theme);
     std::mutex state_mutex;
     std::string repository_path = path;
     RepositorySnapshot snapshot;
@@ -714,6 +748,8 @@ int main(int argc, char* argv[]) {
         std::string current_remote_file_path;
         std::string current_remote_file_content;
         std::string current_remote_browser_error;
+        app::ThemeName current_theme = app::ThemeName::Selenized;
+        std::size_t current_theme_selection = 0;
         View view = View::Changes;
         InputMode mode = InputMode::None;
         bool is_busy = false;
@@ -747,17 +783,58 @@ int main(int argc, char* argv[]) {
             current_remote_file_path = remote_file_path;
             current_remote_file_content = remote_file_content;
             current_remote_browser_error = remote_browser_error;
+            current_theme = active_theme;
+            current_theme_selection = theme_selection;
             view = current_view;
             mode = input_mode;
             is_busy = busy;
             is_gh_authenticated = gh_authenticated;
         }
 
+        const auto displayed_theme = mode == InputMode::ThemePicker
+                                         ? app::available_themes()[current_theme_selection]
+                                         : current_theme;
+        const auto palette = app::theme_palette(displayed_theme);
+
+        if (mode == InputMode::ThemePicker) {
+            ftxui::Elements theme_rows;
+            const auto& themes = app::available_themes();
+            for (std::size_t index = 0; index < themes.size(); ++index) {
+                const auto option_palette = app::theme_palette(themes[index]);
+                auto row = ftxui::hbox({
+                    ftxui::text(std::to_string(index + 1) + "  "),
+                    ftxui::text(app::theme_name(themes[index])) | ftxui::bold,
+                    ftxui::filler(),
+                    ftxui::text(" kw ") | ftxui::color(option_palette.keyword),
+                    ftxui::text(" type ") | ftxui::color(option_palette.type),
+                    ftxui::text(" string ") | ftxui::color(option_palette.string),
+                    ftxui::text(" # ") | ftxui::color(option_palette.comment),
+                });
+                if (index == current_theme_selection) {
+                    row = row | ftxui::bgcolor(palette.selection_background) |
+                          ftxui::color(palette.selection_foreground);
+                }
+                theme_rows.push_back(std::move(row));
+            }
+            return ftxui::vbox({
+                       ftxui::text("GitHub Desktop TUI") | ftxui::bold,
+                       ftxui::separator(),
+                       ftxui::text("COLOR THEME") | ftxui::bold | ftxui::color(palette.accent),
+                       ftxui::text("Choose a palette for the entire interface and code preview."),
+                       ftxui::separator(),
+                       ftxui::vbox(std::move(theme_rows)),
+                       ftxui::separator(),
+                       ftxui::text("j/k or arrows Select  1-4 Choose  Enter Apply  Esc Cancel"),
+                   }) |
+                   ftxui::color(palette.foreground) | ftxui::bgcolor(palette.background) |
+                   ftxui::border;
+        }
+
         auto navigation_tab = [&](const std::string& label, View target) {
             auto element = ftxui::text(label);
             if (view == target) {
-                element = element | ftxui::bold | ftxui::bgcolor(ftxui::Color::GrayDark) |
-                          ftxui::color(ftxui::Color::White);
+                element = element | ftxui::bold | ftxui::bgcolor(palette.selection_background) |
+                          ftxui::color(palette.selection_foreground);
             }
             return element;
         };
@@ -790,8 +867,8 @@ int main(int argc, char* argv[]) {
                 const auto icon = repository.visibility == "private" ? "\uf023 " : "\uf0ac ";
                 auto row = ftxui::text(icon + repository.name);
                 if (index == remote_selection) {
-                    row = row | ftxui::bgcolor(ftxui::Color::GrayDark) |
-                          ftxui::color(ftxui::Color::White);
+                      row = row | ftxui::bgcolor(palette.selection_background) |
+                          ftxui::color(palette.selection_foreground);
                 }
                 repository_rows.push_back(std::move(row));
             }
@@ -845,14 +922,14 @@ int main(int argc, char* argv[]) {
                     ftxui::text("\uf09b  GitHub Desktop TUI") | ftxui::bold,
                     ftxui::filler(),
                     ftxui::text(current_gh_status) |
-                        ftxui::color(is_gh_authenticated ? ftxui::Color::Green
-                                                         : ftxui::Color::Yellow),
+                        ftxui::color(is_gh_authenticated ? palette.success : palette.warning),
                 }),
                 navigation_tabs,
                 ftxui::hbox({repository_list, repository_detail}) | ftxui::flex,
                 cli_panel,
-                ftxui::text("A Sign in  r Refresh  j/k or mouse select  v Browse  Enter Clone  : CLI  q Quit"),
-            }) | ftxui::border;
+                ftxui::text("A Sign in  r Refresh  j/k or mouse select  v Browse  Enter Clone  t Theme  : CLI  q Quit"),
+            }) | ftxui::color(palette.foreground) | ftxui::bgcolor(palette.background) |
+                ftxui::border;
         }
 
         if (view == View::RemoteFiles) {
@@ -866,8 +943,8 @@ int main(int argc, char* argv[]) {
                 auto row = ftxui::text(std::string(entry.is_directory ? "\uf07b  " : "\uf15b  ") +
                                        entry.name);
                 if (index == remote_entry_selection) {
-                    row = row | ftxui::bgcolor(ftxui::Color::GrayDark) |
-                          ftxui::color(ftxui::Color::White);
+                      row = row | ftxui::bgcolor(palette.selection_background) |
+                          ftxui::color(palette.selection_foreground);
                 }
                 remote_rows.push_back(std::move(row));
             }
@@ -896,7 +973,7 @@ int main(int argc, char* argv[]) {
                 const auto preview_end = std::min(all_preview_lines.size(),
                                                   preview_start + visible_rows);
                 for (std::size_t index = preview_start; index < preview_end; ++index) {
-                    preview_lines.push_back(render_syntax_line(all_preview_lines[index]));
+                    preview_lines.push_back(render_syntax_line(all_preview_lines[index], palette));
                 }
             }
             const auto preview_panel = ftxui::vbox({
@@ -923,8 +1000,9 @@ int main(int argc, char* argv[]) {
                                     : current_remote_browser_error.empty() ? current_notice
                                                                           : current_remote_browser_error),
                 ftxui::hbox({remote_list, preview_panel}) | ftxui::flex,
-                ftxui::text("TAB/Shift+TAB Screens  Click/Enter Open  Wheel/PageUp/Down Preview  Backspace Parent  H Home  q Quit"),
-            }) | ftxui::border;
+                ftxui::text("TAB/Shift+TAB Screens  Click/Enter Open  Wheel/PageUp/Down Preview  Backspace Parent  t Theme  H Home  q Quit"),
+            }) | ftxui::color(palette.foreground) | ftxui::bgcolor(palette.background) |
+                ftxui::border;
         }
 
         if (!current.is_repository) {
@@ -947,9 +1025,9 @@ int main(int argc, char* argv[]) {
                 for (std::size_t index = 0; index < current.changes.size(); ++index) {
                     const auto& change = current.changes[index];
                     auto row = ftxui::text("\uf15b " + status_code(change) + "  " + change.path) |
-                               ftxui::color(status_color(change));
+                               ftxui::color(status_color(change, palette));
                     if (index == selection) {
-                        row = row | ftxui::bgcolor(ftxui::Color::GrayDark);
+                        row = row | ftxui::bgcolor(palette.selection_background);
                     }
                     rows.push_back(std::move(row));
             }
@@ -964,7 +1042,7 @@ int main(int argc, char* argv[]) {
                     auto row = ftxui::text("\uf1da " + commit.short_id + "  " +
                                            commit.date + "  " + commit.subject);
                     if (index == selection) {
-                        row = row | ftxui::bgcolor(ftxui::Color::GrayDark);
+                        row = row | ftxui::bgcolor(palette.selection_background);
                     }
                     rows.push_back(std::move(row));
                 }
@@ -979,7 +1057,7 @@ int main(int argc, char* argv[]) {
                     auto row = ftxui::text(std::string(branch.is_current ? "\ue0a0 " : "  ") +
                                            branch.name);
                     if (index == selection) {
-                        row = row | ftxui::bgcolor(ftxui::Color::GrayDark);
+                        row = row | ftxui::bgcolor(palette.selection_background);
                     }
                     rows.push_back(std::move(row));
                 }
@@ -1011,7 +1089,8 @@ int main(int argc, char* argv[]) {
         auto detail_panel = ftxui::vbox({
                               ftxui::text(right_title) | ftxui::bold,
                               ftxui::separator(),
-                              ftxui::vbox(render_diff(right_text)) | ftxui::yframe | ftxui::flex,
+                              ftxui::vbox(render_diff(right_text, palette)) |
+                                  ftxui::yframe | ftxui::flex,
                           }) |
                           ftxui::border | ftxui::flex;
 
@@ -1084,13 +1163,12 @@ int main(int argc, char* argv[]) {
                        ftxui::text(current.path),
                        ftxui::filler(),
                        ftxui::text(current_gh_status) |
-                           ftxui::color(is_gh_authenticated ? ftxui::Color::Green
-                                                            : ftxui::Color::Yellow),
+                           ftxui::color(is_gh_authenticated ? palette.success : palette.warning),
                    }),
                    ftxui::text(current.status),
                    current.has_conflicts
                        ? ftxui::text("Merge conflicts detected. Resolve them before committing.") |
-                             ftxui::color(ftxui::Color::Red)
+                             ftxui::color(palette.error)
                        : ftxui::text(""),
                    ftxui::separator(),
                    content,
@@ -1099,16 +1177,66 @@ int main(int argc, char* argv[]) {
                    cli_panel,
                    ftxui::text(footer),
                }) |
+               ftxui::color(palette.foreground) | ftxui::bgcolor(palette.background) |
                ftxui::border;
     });
 
     app |= ftxui::CatchEvent([&](ftxui::Event event) {
         bool is_busy = false;
         bool is_editing = false;
+        InputMode current_input_mode = InputMode::None;
         {
             std::lock_guard<std::mutex> lock(state_mutex);
             is_busy = busy;
             is_editing = input_mode != InputMode::None;
+            current_input_mode = input_mode;
+        }
+
+        if (current_input_mode == InputMode::ThemePicker) {
+            if (event == ftxui::Event::Escape) {
+                std::lock_guard<std::mutex> lock(state_mutex);
+                input_mode = InputMode::None;
+                theme_selection = theme_index(active_theme);
+                status_message = "Theme selection cancelled.";
+                return true;
+            }
+            if (event == ftxui::Event::ArrowUp || event == ftxui::Event::Character('k') ||
+                event == ftxui::Event::ArrowDown || event == ftxui::Event::Character('j')) {
+                std::lock_guard<std::mutex> lock(state_mutex);
+                const auto count = app::available_themes().size();
+                if (event == ftxui::Event::ArrowUp || event == ftxui::Event::Character('k')) {
+                    theme_selection = theme_selection == 0 ? count - 1 : theme_selection - 1;
+                } else {
+                    theme_selection = (theme_selection + 1) % count;
+                }
+                return true;
+            }
+            for (std::size_t index = 0; index < app::available_themes().size(); ++index) {
+                if (event == ftxui::Event::Character(static_cast<char>('1' + index))) {
+                    std::lock_guard<std::mutex> lock(state_mutex);
+                    theme_selection = index;
+                    return true;
+                }
+            }
+            if (event == ftxui::Event::Return) {
+                app::ThemeName selected_theme;
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex);
+                    selected_theme = app::available_themes()[theme_selection];
+                }
+                const bool saved = !theme_path.empty() &&
+                                   app::save_theme_preference(theme_path, selected_theme);
+                {
+                    std::lock_guard<std::mutex> lock(state_mutex);
+                    active_theme = selected_theme;
+                    input_mode = InputMode::None;
+                    status_message = "Theme changed to " +
+                                     std::string(app::theme_name(selected_theme)) +
+                                     (saved ? "." : "; preference could not be saved.");
+                }
+                return true;
+            }
+            return true;
         }
 
         if (event == ftxui::Event::Escape) {
@@ -1127,6 +1255,14 @@ int main(int argc, char* argv[]) {
             return true;
         }
         if (is_busy) {
+            return true;
+        }
+
+        if (!is_editing && event == ftxui::Event::Character('t')) {
+            std::lock_guard<std::mutex> lock(state_mutex);
+            theme_selection = theme_index(active_theme);
+            input_mode = InputMode::ThemePicker;
+            status_message = "Choose a color theme.";
             return true;
         }
 

@@ -3,6 +3,7 @@
 #include "github/remote_browser.h"
 #include "github/syntax_highlighter.h"
 #include "process/process_runner.h"
+#include "ui/theme.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -134,6 +135,22 @@ const FileChange& find_change(const RepositorySnapshot& snapshot,
 }
 
 void run_tests() {
+    require(app::available_themes().size() == 4 &&
+                app::parse_theme_name("nOrD") == app::ThemeName::Nord &&
+                !app::parse_theme_name("unknown"),
+            "Theme names were not parsed correctly.");
+    {
+        TemporaryDirectory config_directory;
+        const auto preference = std::filesystem::path(config_directory.path()) /
+                                "config" / "theme";
+        require(!app::load_theme_preference(preference),
+                "A missing theme preference should use the default.");
+        require(app::save_theme_preference(preference, app::ThemeName::Catppuccin),
+                "Could not save the selected theme.");
+        require(app::load_theme_preference(preference) == app::ThemeName::Catppuccin,
+                "The selected theme was not persisted.");
+    }
+
         const auto source_lines = github::highlight_file(
                 "src/example.cpp", "int answer = 42; // comment\nconst char* text = \"hello\";\n");
         require(source_lines.size() == 2, "Source preview lines were not preserved.");

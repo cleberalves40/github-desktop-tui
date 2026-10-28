@@ -17,17 +17,19 @@ jobs:
         with:
           release: ${{ matrix.release }}
           usesh: true
-          prepare: pkg install -y cmake ninja ftxui git
+          prepare: pkg install -y cmake ninja ftxui git gh
           run: |
-            cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-            cmake --build build
-            ctest --test-dir build --output-on-failure
+            cmake -S . -B build-clean -G Ninja -DCMAKE_BUILD_TYPE=Release
+            cmake --build build-clean
+            ctest --test-dir build-clean --output-on-failure
+            ./build-clean/github-desktop-tui --version
 
   homebrew-macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - run: brew install cmake ninja ftxui git gh
-      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-      - run: cmake --build build
-      - run: ctest --test-dir build --output-on-failure
+      - run: cmake -S . -B build-clean -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build-clean
+      - run: ctest --test-dir build-clean --output-on-failure
+      - run: ./build-clean/github-desktop-tui --version

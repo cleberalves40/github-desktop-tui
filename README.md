@@ -15,7 +15,7 @@ cobertura de conflitos durante pull; `0.5.0` adiciona navegação por mouse e
 visualização remota de arquivos sem clone; `0.5.1` alinha os alvos clicáveis das
 abas à largura real dos rótulos; `0.5.2` corrige a listagem remota removendo um
 parâmetro não suportado pela Contents API; `0.6.0` colore sintaxe no preview de
-arquivos de código e Markdown.
+arquivos de código e Markdown; `0.7.0` adiciona temas configuráveis.
 
 ## Experiência do aplicativo
 
@@ -51,16 +51,18 @@ necessários para executar e compilar a aplicação.
 ## Build
 
 ```sh
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-ctest --test-dir build --output-on-failure
-./build/github-desktop-tui [caminho-do-repositorio]
+cmake -S . -B build-clean -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build-clean
+ctest --test-dir build-clean --output-on-failure
+./build-clean/github-desktop-tui --version
+./build-clean/github-desktop-tui [caminho-do-repositorio]
 ```
+Use um diretório de build ainda inexistente para testar uma compilação limpa.
 Sem argumento, a aplicação abre a Home do GitHub e não exige um checkout
 local. Execute `gh auth login` ou use `A` na interface para autenticar. `r`
 atualiza a lista, `j`/`k` navega e `Enter` clona o repositório selecionado.
-Para abrir um checkout existente, passe seu caminho. `q` ou `Esc` encerra a
-interface.
+Para abrir um checkout existente, passe seu caminho. `--help` mostra as opções
+de linha de comando; `q` ou `Esc` encerra a interface.
 
 ## Interface e fontes
 
@@ -77,12 +79,27 @@ TAB/Shift+TAB alterna entre as telas disponíveis. As abas e listas aceitam
 cliques; a roda do mouse navega as listas. O suporte ao mouse depende do
 emulador de terminal.
 
+Pressione `t` para escolher entre Selenized, Solarized, Nord e Catppuccin. Use
+as setas ou `j`/`k`, ou escolha `1` a `4`, e confirme com Enter. A preferência
+fica salva em `$XDG_CONFIG_HOME/github-desktop-tui/theme` ou
+`~/.config/github-desktop-tui/theme`.
+
 ## Plataformas e testes
 
 O CI compila e executa CTest em FreeBSD 14.5 e 15.1, além de macOS com pacotes
 Homebrew. Os testes usam repositórios temporários, não acessam a rede e removem
 seus artefatos ao terminar. A execução local de referência desta etapa ocorreu
 em FreeBSD 15.1-STABLE.
+
+## Empacotamento
+
+O port FreeBSD fica em `freebsd/ports/devel/github-desktop-tui`; a fórmula
+Homebrew fica em `Formula/github-desktop-tui.rb`. Com as dependências já
+instaladas, teste a fórmula a partir deste clone com:
+
+```sh
+brew install --build-from-source ./Formula/github-desktop-tui.rb
+```
 
 ## Branches e histórico
 
